@@ -152,6 +152,12 @@ Start with:
 - Final cleanup quality now depends on the Python LaMa sidecar. If processing quality changes, inspect both the C# launcher and `Scripts/lama_inpaint_runner.py`.
 - Default device policy is `cuda-preferred`: prefer GPU when CUDA is available, otherwise fall back to CPU.
 - Current default processing preset is `max`: 100 LaMa steps, 128px crop margin, 2048 resize limit, and 16px mask padding.
+- Channel-order gotcha for LaMa / IOPaint:
+  - `cv2` frames in the runner are normally `BGR`
+  - `IOPaint ModelManager.__call__(...)` expects `RGB` input and returns a `BGR` image
+  - keep conversions only at the model boundary; do not mix temporal buffers, warped frames, mask compositing, or color-correction steps across `RGB` and `BGR`
+  - if the processed box starts flashing between normal and "negative"/swapped colors every other frame, suspect an accidental `RGB`/`BGR` mismatch first
+  - most likely danger spots are `cv2.cvtColor(...)` calls added in `Scripts/lama_inpaint_runner.py`, especially around temporal reuse, previous-frame caches, and final blend/composite steps
 - When changing track or keyframe state in `MainWindow.xaml.cs`, also check:
   - `SyncDraftBoxFromSelectedTrack()`
   - `RebuildOverlayBoxes()`
