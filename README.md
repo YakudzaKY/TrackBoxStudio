@@ -62,6 +62,7 @@ dotnet run
 - Project files already contain a small `learning` block reserved for future ML-assisted workflows, but no training code is enabled in the current build.
 - Final inpainting quality depends on a compatible LaMa Python environment. By default the app looks for `TRACKBOX_PYTHON_EXE`, then a bundled `python\python.exe`, then the sibling dev environment at `D:\git\Lama\python\python.exe`.
 - Device selection is `CUDA preferred` by default: on systems with working CUDA it will load LaMa on GPU, and only fall back to CPU if CUDA is unavailable.
+- The current default processing profile is `Max Quality`: 100 LaMa steps, larger crop margin, higher resize limit, and a small mask padding around the user box.
 
 ## Usage policy
 

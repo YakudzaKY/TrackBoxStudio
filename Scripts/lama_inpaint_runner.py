@@ -115,14 +115,14 @@ def build_mask(frame_shape: tuple[int, int, int], frame_index: int, runtimes: li
     return mask
 
 
-def process_image_with_lama(image: np.ndarray, mask: np.ndarray, model_manager: ModelManager) -> np.ndarray:
+def process_image_with_lama(image: np.ndarray, mask: np.ndarray, model_manager: ModelManager, job: dict) -> np.ndarray:
     config = Config(
-        ldm_steps=50,
+        ldm_steps=max(1, int(job.get("ldmSteps", 100))),
         ldm_sampler=LDMSampler.ddim,
         hd_strategy=HDStrategy.CROP,
-        hd_strategy_crop_margin=64,
-        hd_strategy_crop_trigger_size=800,
-        hd_strategy_resize_limit=1600,
+        hd_strategy_crop_margin=max(0, int(job.get("cropMargin", 128))),
+        hd_strategy_crop_trigger_size=max(128, int(job.get("cropTriggerSize", 800))),
+        hd_strategy_resize_limit=max(256, int(job.get("resizeLimit", 2048))),
     )
     result = model_manager(image, mask, config)
     if result.dtype in [np.float64, np.float32]:
@@ -176,26 +176,27 @@ def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: s
     move_temp_to_output(temp_video_path, output_path)
 
 
-def process_image(input_path: str, output_path: str, runtimes: list[TrackRuntime], model_manager: ModelManager, mask_padding: int) -> None:
-    emit_status("Processing image with LaMa...")
-    image = cv2.imread(input_path, cv2.IMREAD_COLOR)
-    if image is None or image.size == 0:
+def process_image(input_path: str, output_path: str, runtimes: list[TrackRuntime], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
+    emit_status("Processing image with LaMa (Max quality)...")
+    image_bgr = cv2.imread(input_path, cv2.IMREAD_COLOR)
+    if image_bgr is None or image_bgr.size == 0:
         raise RuntimeError(f"Failed to read image: {input_path}")
 
-    mask = build_mask(image.shape, 0, runtimes, mask_padding)
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    mask = build_mask(image_bgr.shape, 0, runtimes, mask_padding)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     if cv2.countNonZero(mask) == 0:
-        cv2.imwrite(output_path, image)
+        cv2.imwrite(output_path, image_bgr)
         emit_progress(1.0)
         return
 
-    result = process_image_with_lama(image, mask, model_manager)
+    result = process_image_with_lama(image_rgb, mask, model_manager, job)
     cv2.imwrite(output_path, result)
     emit_progress(1.0)
 
 
-def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime], model_manager: ModelManager, mask_padding: int) -> None:
+def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
     emit_status("Opening video...")
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
@@ -224,7 +225,7 @@ def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime
 
     try:
         progress_stride = max(1, total_frames // 200)
-        emit_status("Applying LaMa inpainting to video frames...")
+        emit_status("Applying LaMa inpainting to video frames (Max quality)...")
         frame_index = 0
         while True:
             ok, frame = capture.read()
@@ -235,7 +236,8 @@ def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime
             if cv2.countNonZero(mask) == 0:
                 writer.write(frame)
             else:
-                result = process_image_with_lama(frame, mask, model_manager)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                result = process_image_with_lama(frame_rgb, mask, model_manager, job)
                 writer.write(result)
 
             frame_index += 1
@@ -268,17 +270,18 @@ def main() -> int:
     tracks = job.get("tracks", [])
     mask_padding = max(0, int(job.get("maskPadding", 0)))
     device = resolve_device(job.get("devicePreference", "cuda-preferred"))
+    quality_preset = str(job.get("qualityPreset", "max")).strip() or "max"
 
-    emit_status(f"Loading LaMa model on {device}...")
+    emit_status(f"Loading LaMa model on {device} ({quality_preset} quality)...")
     model_manager = load_lama_model(device)
     emit_status("LaMa model loaded.")
 
     runtimes = create_runtime_tracks(tracks)
     suffix = Path(input_path).suffix.lower()
     if suffix in {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}:
-        process_video(input_path, output_path, runtimes, model_manager, mask_padding)
+        process_video(input_path, output_path, runtimes, model_manager, job, mask_padding)
     else:
-        process_image(input_path, output_path, runtimes, model_manager, mask_padding)
+        process_image(input_path, output_path, runtimes, model_manager, job, mask_padding)
 
     emit_status("LaMa processing finished.")
     return 0

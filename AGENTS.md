@@ -151,6 +151,7 @@ Start with:
 - The `learning` block in project JSON is only a placeholder right now. Do not pretend training exists unless it is actually implemented.
 - Final cleanup quality now depends on the Python LaMa sidecar. If processing quality changes, inspect both the C# launcher and `Scripts/lama_inpaint_runner.py`.
 - Default device policy is `cuda-preferred`: prefer GPU when CUDA is available, otherwise fall back to CPU.
+- Current default processing preset is `max`: 100 LaMa steps, 128px crop margin, 2048 resize limit, and 16px mask padding.
 - When changing track or keyframe state in `MainWindow.xaml.cs`, also check:
   - `SyncDraftBoxFromSelectedTrack()`
   - `RebuildOverlayBoxes()`

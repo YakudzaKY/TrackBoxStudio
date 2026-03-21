@@ -64,8 +64,13 @@ public sealed class InpaintProcessingService
         {
             InputPath = inputPath,
             OutputPath = outputPath,
+            QualityPreset = "max",
             DevicePreference = "cuda-preferred",
-            MaskPadding = 0,
+            MaskPadding = 16,
+            LdmSteps = 100,
+            CropMargin = 128,
+            CropTriggerSize = 800,
+            ResizeLimit = 2048,
             Tracks = tracks
                 .Where(track => track.Keyframes.Count > 0)
                 .Select(track => new LamaProcessingTrackDocument

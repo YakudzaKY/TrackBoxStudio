@@ -6,9 +6,19 @@ public sealed class LamaProcessingJobDocument
 
     public string OutputPath { get; set; } = string.Empty;
 
+    public string QualityPreset { get; set; } = "max";
+
     public string DevicePreference { get; set; } = "cuda-preferred";
 
-    public int MaskPadding { get; set; }
+    public int MaskPadding { get; set; } = 16;
+
+    public int LdmSteps { get; set; } = 100;
+
+    public int CropMargin { get; set; } = 128;
+
+    public int CropTriggerSize { get; set; } = 800;
+
+    public int ResizeLimit { get; set; } = 2048;
 
     public List<LamaProcessingTrackDocument> Tracks { get; set; } = [];
 }
