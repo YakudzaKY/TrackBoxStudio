@@ -49,10 +49,15 @@ This repo is meant to stay simple, local-first, and editor-driven.
   Backend logic that should stay UI-independent where possible.
   Important files:
   - `MediaDocumentService.cs`: media open/reset/frame extraction
-  - `InpaintProcessingService.cs`: actual frame/video processing and inpaint pass
+  - `InpaintProcessingService.cs`: launches the Python LaMa backend and translates progress/status back into the app
   - `ProjectPersistenceService.cs`: save/load `.trackbox.json`
   - `WatermarkRegistryService.cs`: save/load named watermark registry in `Data/`
   - `BitmapSourceFactory.cs`: OpenCV to WPF bitmap conversion
+
+- `Scripts/`
+  Python sidecar utilities shipped with the app output.
+  Important files:
+  - `lama_inpaint_runner.py`: real LaMa processing backend for manual timeline jobs
 
 - `Dialogs/`
   Small reusable modal dialogs like text prompts for naming watermarks.
@@ -111,6 +116,7 @@ This is the place for:
 
 Start with:
 - `Services/InpaintProcessingService.cs`
+- `Scripts/lama_inpaint_runner.py`
 
 This is the place for:
 - mask generation
@@ -118,6 +124,7 @@ This is the place for:
 - frame loop behavior
 - export behavior
 - ffmpeg audio preservation flow
+- LaMa model loading and device choice
 
 ### If you want to change timeline semantics
 
@@ -142,6 +149,8 @@ Start with:
 - The app is intentionally manual-first. Do not make auto-detection a hard dependency.
 - Keep project save/load stable. Future ML work is expected, so prefer additive schema changes.
 - The `learning` block in project JSON is only a placeholder right now. Do not pretend training exists unless it is actually implemented.
+- Final cleanup quality now depends on the Python LaMa sidecar. If processing quality changes, inspect both the C# launcher and `Scripts/lama_inpaint_runner.py`.
+- Default device policy is `cuda-preferred`: prefer GPU when CUDA is available, otherwise fall back to CPU.
 - When changing track or keyframe state in `MainWindow.xaml.cs`, also check:
   - `SyncDraftBoxFromSelectedTrack()`
   - `RebuildOverlayBoxes()`

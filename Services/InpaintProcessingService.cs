@@ -1,237 +1,288 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
-using OpenCvSharp;
+using System.Text.Json;
 using TrackBoxStudio.Models;
 
 namespace TrackBoxStudio.Services;
 
 public sealed class InpaintProcessingService
 {
-    private sealed class TrackRuntime
+    private readonly JsonSerializerOptions _jsonOptions = new()
     {
-        public required BoxKeyframe[] Keyframes { get; init; }
-
-        public int Cursor { get; set; }
-
-        public BoxKeyframe? Active { get; set; }
-    }
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 
     public async Task ProcessAsync(
         string inputPath,
         string outputPath,
         IReadOnlyList<TimelineTrack> tracks,
         IProgress<double>? progress,
+        IProgress<string>? status,
         CancellationToken cancellationToken)
     {
-        if (MediaDocumentService.IsVideoFile(inputPath))
+        if (string.IsNullOrWhiteSpace(inputPath))
         {
-            await Task.Run(() => ProcessVideo(inputPath, outputPath, tracks, progress, cancellationToken), cancellationToken);
-            return;
+            throw new ArgumentException("Input path cannot be empty.", nameof(inputPath));
         }
 
-        await Task.Run(() => ProcessImage(inputPath, outputPath, tracks), cancellationToken);
-        progress?.Report(1.0);
-    }
-
-    private void ProcessImage(string inputPath, string outputPath, IReadOnlyList<TimelineTrack> tracks)
-    {
-        using var image = Cv2.ImRead(inputPath, ImreadModes.Color);
-        if (image.Empty())
+        if (string.IsNullOrWhiteSpace(outputPath))
         {
-            throw new InvalidOperationException($"Failed to read image: {inputPath}");
+            throw new ArgumentException("Output path cannot be empty.", nameof(outputPath));
         }
 
-        using var mask = BuildMask(image.Size(), 0, CreateRuntimeTracks(tracks));
-        using var result = ApplyInpaintIfNeeded(image, mask);
-        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-        Cv2.ImWrite(outputPath, result);
-    }
-
-    private void ProcessVideo(
-        string inputPath,
-        string outputPath,
-        IReadOnlyList<TimelineTrack> tracks,
-        IProgress<double>? progress,
-        CancellationToken cancellationToken)
-    {
-        using var capture = new VideoCapture(inputPath);
-        if (!capture.IsOpened())
+        if (tracks.Count == 0 || tracks.All(track => track.Keyframes.Count == 0))
         {
-            throw new InvalidOperationException($"Failed to open video: {inputPath}");
+            throw new InvalidOperationException("There are no timeline keyframes to process.");
         }
 
-        var totalFrames = Math.Max(1, (int)capture.Get(VideoCaptureProperties.FrameCount));
-        var fps = capture.Get(VideoCaptureProperties.Fps);
-        var width = (int)capture.Get(VideoCaptureProperties.FrameWidth);
-        var height = (int)capture.Get(VideoCaptureProperties.FrameHeight);
-        var outputDirectory = Path.GetDirectoryName(outputPath)!;
-        Directory.CreateDirectory(outputDirectory);
-
-        var tempVideoPath = Path.Combine(outputDirectory, $"{Path.GetFileNameWithoutExtension(outputPath)}.video-temp.mp4");
-        using var writer = new VideoWriter(
-            tempVideoPath,
-            FourCC.MP4V,
-            fps > 0 ? fps : 30,
-            new OpenCvSharp.Size(width, height));
-
-        if (!writer.IsOpened())
-        {
-            throw new InvalidOperationException($"Failed to create output video: {tempVideoPath}");
-        }
-
-        var runtimeTracks = CreateRuntimeTracks(tracks);
-        using var frame = new Mat();
-        for (var frameIndex = 0; frameIndex < totalFrames; frameIndex++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!capture.Read(frame) || frame.Empty())
-            {
-                break;
-            }
-
-            using var mask = BuildMask(frame.Size(), frameIndex, runtimeTracks);
-            using var processed = ApplyInpaintIfNeeded(frame, mask);
-            writer.Write(processed);
-            progress?.Report((frameIndex + 1d) / totalFrames);
-        }
-
-        writer.Release();
-        CopyAudioIfPossible(inputPath, outputPath, tempVideoPath);
-    }
-
-    private static List<TrackRuntime> CreateRuntimeTracks(IReadOnlyList<TimelineTrack> tracks)
-    {
-        return tracks
-            .Select(track => new TrackRuntime
-            {
-                Keyframes = track.OrderedKeyframes().Select(keyframe => keyframe.Clone()).ToArray(),
-                Cursor = 0,
-                Active = null,
-            })
-            .ToList();
-    }
-
-    private static Mat BuildMask(OpenCvSharp.Size size, int frameIndex, List<TrackRuntime> runtimeTracks)
-    {
-        var mask = new Mat(size, MatType.CV_8UC1, Scalar.Black);
-        foreach (var runtime in runtimeTracks)
-        {
-            var active = AdvanceRuntime(runtime, frameIndex);
-            if (active?.Enabled != true || active.Box is null)
-            {
-                continue;
-            }
-
-            var rect = NormalizeRect(active.Box, size);
-            if (rect.Width <= 0 || rect.Height <= 0)
-            {
-                continue;
-            }
-
-            Cv2.Rectangle(mask, rect, Scalar.White, -1);
-        }
-
-        return mask;
-    }
-
-    private static BoxKeyframe? AdvanceRuntime(TrackRuntime runtime, int frameIndex)
-    {
-        while (runtime.Cursor < runtime.Keyframes.Length && runtime.Keyframes[runtime.Cursor].Frame <= frameIndex)
-        {
-            runtime.Active = runtime.Keyframes[runtime.Cursor];
-            runtime.Cursor++;
-        }
-
-        return runtime.Active;
-    }
-
-    private static Rect NormalizeRect(BoxRect box, OpenCvSharp.Size bounds)
-    {
-        var x = Math.Clamp(box.X, 0, Math.Max(0, bounds.Width - 1));
-        var y = Math.Clamp(box.Y, 0, Math.Max(0, bounds.Height - 1));
-        var width = Math.Clamp(box.Width, 0, bounds.Width - x);
-        var height = Math.Clamp(box.Height, 0, bounds.Height - y);
-        return new Rect(x, y, width, height);
-    }
-
-    private static Mat ApplyInpaintIfNeeded(Mat frame, Mat mask)
-    {
-        if (Cv2.CountNonZero(mask) == 0)
-        {
-            return frame.Clone();
-        }
-
-        var result = new Mat();
-        Cv2.Inpaint(frame, mask, result, 3, InpaintTypes.Telea);
-        return result;
-    }
-
-    private static void CopyAudioIfPossible(string inputPath, string outputPath, string tempVideoPath)
-    {
-        var ffmpeg = ResolveFfmpeg();
-        if (ffmpeg is null)
-        {
-            MoveTempToOutput(tempVideoPath, outputPath);
-            return;
-        }
-
-        var arguments =
-            $"-y -i \"{tempVideoPath}\" -i \"{inputPath}\" -map 0:v:0 -map 1:a? -c:v copy -c:a aac -shortest \"{outputPath}\"";
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = ffmpeg,
-            Arguments = arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-        };
+        var job = BuildJob(inputPath, outputPath, tracks);
+        var payloadPath = Path.Combine(Path.GetTempPath(), $"trackbox-lama-{Guid.NewGuid():N}.json");
 
         try
         {
-            using var process = Process.Start(startInfo);
-            process?.WaitForExit();
-            if (process is not null && process.ExitCode == 0 && File.Exists(outputPath))
+            await using (var stream = File.Create(payloadPath))
             {
-                File.Delete(tempVideoPath);
+                await JsonSerializer.SerializeAsync(stream, job, _jsonOptions, cancellationToken);
+            }
+
+            await RunLamaProcessAsync(payloadPath, progress, status, cancellationToken);
+        }
+        finally
+        {
+            if (File.Exists(payloadPath))
+            {
+                File.Delete(payloadPath);
+            }
+        }
+    }
+
+    private static LamaProcessingJobDocument BuildJob(string inputPath, string outputPath, IReadOnlyList<TimelineTrack> tracks)
+    {
+        return new LamaProcessingJobDocument
+        {
+            InputPath = inputPath,
+            OutputPath = outputPath,
+            DevicePreference = "cuda-preferred",
+            MaskPadding = 0,
+            Tracks = tracks
+                .Where(track => track.Keyframes.Count > 0)
+                .Select(track => new LamaProcessingTrackDocument
+                {
+                    Id = track.Id,
+                    Name = track.Name,
+                    Keyframes = track
+                        .OrderedKeyframes()
+                        .Select(keyframe => new LamaProcessingKeyframeDocument
+                        {
+                            Frame = keyframe.Frame,
+                            Enabled = keyframe.Enabled,
+                            Box = keyframe.Box?.Clone(),
+                        })
+                        .ToList(),
+                })
+                .ToList(),
+        };
+    }
+
+    private async Task RunLamaProcessAsync(
+        string payloadPath,
+        IProgress<double>? progress,
+        IProgress<string>? status,
+        CancellationToken cancellationToken)
+    {
+        var pythonExecutable = ResolvePythonExecutable();
+        var runnerScript = ResolveRunnerScriptPath();
+        status?.Report($"Launching LaMa backend: {Path.GetFileName(pythonExecutable)}");
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = pythonExecutable,
+                Arguments = $"\"{runnerScript}\" \"{payloadPath}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = Path.GetDirectoryName(runnerScript) ?? AppContext.BaseDirectory,
+            },
+            EnableRaisingEvents = true,
+        };
+
+        var errorLines = new List<string>();
+        var stdoutTaskCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stderrTaskCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        process.OutputDataReceived += (_, args) =>
+        {
+            if (args.Data is null)
+            {
+                stdoutTaskCompletion.TrySetResult();
                 return;
+            }
+
+            HandleOutputLine(args.Data, progress, status);
+        };
+
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (args.Data is null)
+            {
+                stderrTaskCompletion.TrySetResult();
+                return;
+            }
+
+            lock (errorLines)
+            {
+                errorLines.Add(args.Data);
+                if (errorLines.Count > 40)
+                {
+                    errorLines.RemoveAt(0);
+                }
+            }
+        };
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("Failed to start the LaMa backend process.");
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+            await Task.WhenAll(stdoutTaskCompletion.Task, stderrTaskCompletion.Task);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKillProcess(process);
+            throw;
+        }
+
+        if (process.ExitCode != 0)
+        {
+            var details = errorLines.Count == 0
+                ? "The LaMa backend exited without detailed stderr output."
+                : string.Join(Environment.NewLine, errorLines);
+
+            throw new InvalidOperationException(
+                $"LaMa backend failed with exit code {process.ExitCode}.{Environment.NewLine}{details}");
+        }
+    }
+
+    private static void HandleOutputLine(string line, IProgress<double>? progress, IProgress<string>? status)
+    {
+        if (line.StartsWith("PROGRESS ", StringComparison.OrdinalIgnoreCase))
+        {
+            var rawValue = line["PROGRESS ".Length..].Trim();
+            if (double.TryParse(rawValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                progress?.Report(value);
+            }
+            return;
+        }
+
+        if (line.StartsWith("STATUS ", StringComparison.OrdinalIgnoreCase))
+        {
+            status?.Report(line["STATUS ".Length..].Trim());
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(line))
+        {
+            status?.Report(line.Trim());
+        }
+    }
+
+    private static string ResolvePythonExecutable()
+    {
+        var candidates = new List<string>();
+
+        AppendIfPresent(candidates, Environment.GetEnvironmentVariable("TRACKBOX_PYTHON_EXE"));
+        AppendIfPresent(candidates, Environment.GetEnvironmentVariable("LAMA_PYTHON_EXE"));
+        AppendIfPresent(candidates, Path.Combine(AppContext.BaseDirectory, "python", "python.exe"));
+
+        var projectRoot = FindProjectRoot();
+        if (projectRoot is not null)
+        {
+            AppendIfPresent(candidates, Path.Combine(projectRoot, "python", "python.exe"));
+            var parentDirectory = Directory.GetParent(projectRoot)?.FullName;
+            if (!string.IsNullOrWhiteSpace(parentDirectory))
+            {
+                AppendIfPresent(candidates, Path.Combine(parentDirectory, "Lama", "python", "python.exe"));
+            }
+        }
+
+        foreach (var candidate in candidates.Where(File.Exists))
+        {
+            return candidate;
+        }
+
+        throw new FileNotFoundException(
+            "LaMa Python runtime was not found. Set TRACKBOX_PYTHON_EXE or place a compatible python.exe beside the app.");
+    }
+
+    private static string ResolveRunnerScriptPath()
+    {
+        var candidates = new List<string>
+        {
+            Path.Combine(AppContext.BaseDirectory, "Scripts", "lama_inpaint_runner.py"),
+        };
+
+        var projectRoot = FindProjectRoot();
+        if (projectRoot is not null)
+        {
+            candidates.Add(Path.Combine(projectRoot, "Scripts", "lama_inpaint_runner.py"));
+        }
+
+        foreach (var candidate in candidates.Where(File.Exists))
+        {
+            return candidate;
+        }
+
+        throw new FileNotFoundException("LaMa runner script was not found in the TrackBoxStudio Scripts folder.");
+    }
+
+    private static string? FindProjectRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "TrackBoxStudio.csproj")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        return null;
+    }
+
+    private static void AppendIfPresent(List<string> candidates, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            candidates.Add(path);
+        }
+    }
+
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
             }
         }
         catch
         {
-            // Fall back to the silent video if ffmpeg is missing or fails.
+            // Best-effort cleanup only.
         }
-
-        MoveTempToOutput(tempVideoPath, outputPath);
-    }
-
-    private static void MoveTempToOutput(string tempVideoPath, string outputPath)
-    {
-        if (File.Exists(outputPath))
-        {
-            File.Delete(outputPath);
-        }
-
-        File.Move(tempVideoPath, outputPath);
-    }
-
-    private static string? ResolveFfmpeg()
-    {
-        var pathValue = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrWhiteSpace(pathValue))
-        {
-            return null;
-        }
-
-        foreach (var directory in pathValue.Split(Path.PathSeparator))
-        {
-            var candidate = Path.Combine(directory.Trim(), "ffmpeg.exe");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
     }
 }

@@ -963,7 +963,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             var trackSnapshot = BuildProcessingSnapshot();
             var progress = new Progress<double>(value => ProgressValue = value * 100);
-            await _processingService.ProcessAsync(InputPath, OutputPath, trackSnapshot, progress, CancellationToken.None);
+            var status = new Progress<string>(value =>
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    StatusText = value;
+                }
+            });
+
+            await _processingService.ProcessAsync(InputPath, OutputPath, trackSnapshot, progress, status, CancellationToken.None);
 
             ProgressValue = 100;
             StatusText = $"Done. Output written to {OutputPath}.";
