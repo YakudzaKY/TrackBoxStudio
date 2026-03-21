@@ -198,7 +198,8 @@
                                                 Background="Transparent"
                                                 MouseLeftButtonDown="OverlayInputCanvas_MouseLeftButtonDown"
                                                 MouseMove="OverlayInputCanvas_MouseMove"
-                                                MouseLeftButtonUp="OverlayInputCanvas_MouseLeftButtonUp" />
+                                                MouseLeftButtonUp="OverlayInputCanvas_MouseLeftButtonUp"
+                                                MouseLeave="OverlayInputCanvas_MouseLeave" />
                                     </Grid>
                                 </Viewbox>
                             </ScrollViewer>
@@ -240,8 +241,8 @@
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="16,0,0,0">
                                 <Button Content="Save Box Here" Click="SaveBoxHere_Click" IsEnabled="{Binding CanSaveCurrentBox}" Background="#4ADE80" Foreground="#06140C" Margin="0,0,8,0" />
-                                <Button Content="Disable Here" Click="DisableHere_Click" IsEnabled="{Binding CanEditTrack}" Margin="0,0,8,0" />
-                                <Button Content="Remove Keyframe" Click="RemoveKeyframeHere_Click" IsEnabled="{Binding CanEditTrack}" Background="#34131D" BorderBrush="#5C2230" />
+                                <Button Content="{Binding ToggleTrackHereLabel}" Click="DisableHere_Click" IsEnabled="{Binding CanToggleTrackStateHere}" Margin="0,0,8,0" />
+                                <Button Content="Remove Keyframe" Click="RemoveKeyframeHere_Click" IsEnabled="{Binding CanRemoveKeyframeHere}" Background="#34131D" BorderBrush="#5C2230" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -298,7 +299,13 @@
                                                 </ItemsControl.ItemsPanel>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate DataType="{x:Type models:TrackSegmentPreview}">
-                                                        <Border Background="{Binding Fill}" BorderBrush="{Binding Border}" BorderThickness="1" Padding="8,4" Margin="0,0,6,0">
+                                                        <Border Background="{Binding Fill}"
+                                                                BorderBrush="{Binding Border}"
+                                                                BorderThickness="1"
+                                                                Padding="8,4"
+                                                                Margin="0,0,6,0"
+                                                                Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                ContextMenuOpening="TrackSegmentBorder_ContextMenuOpening">
                                                             <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11" FontWeight="SemiBold" />
                                                         </Border>
                                                     </DataTemplate>

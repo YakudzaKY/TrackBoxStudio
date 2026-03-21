@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -16,6 +17,9 @@ namespace TrackBoxStudio;
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
+    private const int MinimumBoxSize = 2;
+    private const double ResizeGripSize = 10;
+
     private readonly WatermarkRegistryService _registryService = new();
     private readonly MediaDocumentService _mediaService = new();
     private readonly InpaintProcessingService _processingService = new();
@@ -47,10 +51,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private double _progressValue;
     private string _statusText = "Open a file to start a new session.";
     private BoxRect? _draftBox;
-    private bool _isDrawing;
+    private OverlayInteractionMode _overlayInteractionMode;
+    private ResizeEdges _activeResizeEdges;
+    private BoxRect? _interactionStartBox;
+    private bool _overlayInteractionChanged;
     private Point _dragStart;
     private int _pendingFrameIndex;
     private int _frameRequestId;
+
+    private enum OverlayInteractionMode
+    {
+        None,
+        Draw,
+        Move,
+        Resize,
+    }
+
+    private sealed record SegmentMenuContext(TimelineTrack Track, TrackSegmentPreview Segment);
+
+    [Flags]
+    private enum ResizeEdges
+    {
+        None = 0,
+        Left = 1,
+        Top = 2,
+        Right = 4,
+        Bottom = 8,
+    }
 
     public MainWindow()
     {
@@ -73,6 +100,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             OnPropertyChanged(nameof(CanProcess));
             OnPropertyChanged(nameof(CanSaveProject));
+            OnPropertyChanged(nameof(CanRemoveKeyframeHere));
             OnPropertyChanged(nameof(SelectedTrackStatus));
             OnPropertyChanged(nameof(SelectedTrackKeyframeStatus));
         };
@@ -103,6 +131,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 RebuildOverlayBoxes();
                 OnPropertyChanged(nameof(CanEditTrack));
                 OnPropertyChanged(nameof(CanSaveCurrentBox));
+                OnPropertyChanged(nameof(CanRemoveKeyframeHere));
+                OnPropertyChanged(nameof(CanToggleTrackStateHere));
+                OnPropertyChanged(nameof(ToggleTrackHereLabel));
                 OnPropertyChanged(nameof(SelectedTrackStatus));
                 OnPropertyChanged(nameof(SelectedTrackKeyframeStatus));
             }
@@ -161,6 +192,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 OnPropertyChanged(nameof(CurrentFrameDisplay));
                 OnPropertyChanged(nameof(CurrentTimeDisplay));
+                OnPropertyChanged(nameof(CanRemoveKeyframeHere));
+                OnPropertyChanged(nameof(CanToggleTrackStateHere));
+                OnPropertyChanged(nameof(ToggleTrackHereLabel));
+                OnPropertyChanged(nameof(SelectedTrackStatus));
             }
         }
     }
@@ -224,6 +259,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanProcess));
                 OnPropertyChanged(nameof(CanEditTrack));
                 OnPropertyChanged(nameof(CanSaveCurrentBox));
+                OnPropertyChanged(nameof(CanRemoveKeyframeHere));
+                OnPropertyChanged(nameof(CanToggleTrackStateHere));
                 OnPropertyChanged(nameof(CanSaveProject));
             }
         }
@@ -239,6 +276,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanProcess));
                 OnPropertyChanged(nameof(CanEditTrack));
                 OnPropertyChanged(nameof(CanSaveCurrentBox));
+                OnPropertyChanged(nameof(CanRemoveKeyframeHere));
+                OnPropertyChanged(nameof(CanToggleTrackStateHere));
                 OnPropertyChanged(nameof(CanSaveProject));
             }
         }
@@ -271,6 +310,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 OnPropertyChanged(nameof(DraftBoxSummary));
                 OnPropertyChanged(nameof(CanSaveCurrentBox));
+                OnPropertyChanged(nameof(CanToggleTrackStateHere));
+                OnPropertyChanged(nameof(SelectedTrackStatus));
             }
         }
     }
@@ -284,6 +325,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public bool CanEditTrack => IsMediaLoaded && !IsBusy && SelectedTrack is not null;
 
     public bool CanSaveCurrentBox => CanEditTrack && DraftBox is not null;
+
+    public bool CanRemoveKeyframeHere => CanEditTrack && GetRemovableKeyframeAtCurrentFrame(SelectedTrack, CurrentFrameIndex) is not null;
+
+    public bool CanToggleTrackStateHere => CanEditTrack && (IsSelectedTrackEnabledAtCurrentFrame() || HasBoxToEnableHere());
 
     public bool CanProcess => IsMediaLoaded && !IsBusy && Tracks.Any(track => track.Keyframes.Count > 0);
 
@@ -309,7 +354,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public string SelectedTrackStatus => SelectedTrack is null
         ? "Add or select a track, then draw a box directly on the frame."
-        : $"Selected: {SelectedTrack.DisplayName}. Draw a box, save a keyframe, or disable the watermark on this frame.";
+        : BuildSelectedTrackStatus();
+
+    public string ToggleTrackHereLabel => IsSelectedTrackEnabledAtCurrentFrame()
+        ? "Disable Here"
+        : "Enable Here";
 
     public string SelectedTrackKeyframeStatus => SelectedTrack is null
         ? "No track selected."
@@ -673,35 +722,94 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        _isDrawing = true;
         _dragStart = e.GetPosition(OverlayInputCanvas);
+        _interactionStartBox = DraftBox?.Clone();
+        _overlayInteractionChanged = false;
+        _activeResizeEdges = ResizeEdges.None;
+
+        if (TryGetOverlayInteraction(_dragStart, _interactionStartBox, out var interactionMode, out var resizeEdges))
+        {
+            _overlayInteractionMode = interactionMode;
+            _activeResizeEdges = resizeEdges;
+            OverlayInputCanvas.Cursor = GetCursorForInteraction(interactionMode, resizeEdges);
+        }
+        else
+        {
+            _overlayInteractionMode = OverlayInteractionMode.Draw;
+            DraftBox = BuildBoxFromPoints(_dragStart, _dragStart);
+            OverlayInputCanvas.Cursor = Cursors.Cross;
+            RebuildOverlayBoxes();
+        }
+
         OverlayInputCanvas.CaptureMouse();
-        DraftBox = BuildBoxFromPoints(_dragStart, _dragStart);
-        RebuildOverlayBoxes();
+        e.Handled = true;
     }
 
     private void OverlayInputCanvas_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!_isDrawing)
+        var position = e.GetPosition(OverlayInputCanvas);
+        if (_overlayInteractionMode == OverlayInteractionMode.None)
+        {
+            UpdateOverlayCursor(position);
+            return;
+        }
+
+        var updatedDraft = _overlayInteractionMode switch
+        {
+            OverlayInteractionMode.Draw => BuildBoxFromPoints(_dragStart, position),
+            OverlayInteractionMode.Move or OverlayInteractionMode.Resize when _interactionStartBox is not null
+                => TransformDraftBox(_interactionStartBox, position),
+            _ => DraftBox,
+        };
+
+        if (updatedDraft is null)
         {
             return;
         }
 
-        DraftBox = BuildBoxFromPoints(_dragStart, e.GetPosition(OverlayInputCanvas));
+        _overlayInteractionChanged |= _interactionStartBox is not null
+            ? !BoxEquals(updatedDraft, _interactionStartBox)
+            : updatedDraft.Width > 0 || updatedDraft.Height > 0;
+
+        DraftBox = updatedDraft;
         RebuildOverlayBoxes();
+        e.Handled = true;
     }
 
     private void OverlayInputCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (!_isDrawing)
+        if (_overlayInteractionMode == OverlayInteractionMode.None)
         {
             return;
         }
 
-        _isDrawing = false;
         OverlayInputCanvas.ReleaseMouseCapture();
+        var completedMode = _overlayInteractionMode;
         DraftBox = NormalizeDraft(DraftBox);
-        RebuildOverlayBoxes();
+
+        if ((completedMode == OverlayInteractionMode.Move || completedMode == OverlayInteractionMode.Resize)
+            && _overlayInteractionChanged
+            && SelectedTrack is not null
+            && DraftBox is not null)
+        {
+            SaveDraftBoxToCurrentFrame(SelectedTrack, $"Updated {SelectedTrack.Name} box on frame {CurrentFrameIndex}.");
+        }
+        else
+        {
+            RebuildOverlayBoxes();
+        }
+
+        ResetOverlayInteraction();
+        UpdateOverlayCursor(e.GetPosition(OverlayInputCanvas));
+        e.Handled = true;
+    }
+
+    private void OverlayInputCanvas_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (_overlayInteractionMode == OverlayInteractionMode.None)
+        {
+            OverlayInputCanvas.Cursor = Cursors.Arrow;
+        }
     }
 
     private void SaveBoxHere_Click(object sender, RoutedEventArgs e)
@@ -711,13 +819,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        SelectedTrack.UpsertKeyframe(new BoxKeyframe
-        {
-            Frame = CurrentFrameIndex,
-            Enabled = true,
-            Box = DraftBox.Clone(),
-        });
-        RefreshTrackAfterEdit(SelectedTrack, $"Saved a box on frame {CurrentFrameIndex}.");
+        SaveDraftBoxToCurrentFrame(SelectedTrack, $"Saved a box on frame {CurrentFrameIndex}.");
     }
 
     private void DisableHere_Click(object sender, RoutedEventArgs e)
@@ -727,14 +829,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (IsSelectedTrackEnabledAtCurrentFrame())
+        {
+            SelectedTrack.UpsertKeyframe(new BoxKeyframe
+            {
+                Frame = CurrentFrameIndex,
+                Enabled = false,
+                Box = null,
+            });
+            RefreshTrackAfterEdit(SelectedTrack, $"Disabled {SelectedTrack.Name} on frame {CurrentFrameIndex}.");
+            return;
+        }
+
+        var boxToEnable = ResolveBoxToEnableHere();
+        if (boxToEnable is null)
+        {
+            MessageBox.Show(
+                this,
+                "There is no box to restore on this frame yet. Draw a box here first, then save or enable it.",
+                "Nothing to enable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            StatusText = $"Draw a box on frame {CurrentFrameIndex} before enabling {SelectedTrack.Name} here.";
+            return;
+        }
+
         SelectedTrack.UpsertKeyframe(new BoxKeyframe
         {
             Frame = CurrentFrameIndex,
-            Enabled = false,
-            Box = null,
+            Enabled = true,
+            Box = boxToEnable,
         });
-        DraftBox = null;
-        RefreshTrackAfterEdit(SelectedTrack, $"Disabled {SelectedTrack.Name} on frame {CurrentFrameIndex}.");
+        RefreshTrackAfterEdit(SelectedTrack, $"Enabled {SelectedTrack.Name} on frame {CurrentFrameIndex}.");
     }
 
     private void RemoveKeyframeHere_Click(object sender, RoutedEventArgs e)
@@ -744,9 +870,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        SelectedTrack.RemoveKeyframe(CurrentFrameIndex);
-        SyncDraftBoxFromSelectedTrack();
-        RefreshTrackAfterEdit(SelectedTrack, $"Removed the keyframe at frame {CurrentFrameIndex}.");
+        var keyframe = GetRemovableKeyframeAtCurrentFrame(SelectedTrack, CurrentFrameIndex);
+        if (keyframe is null)
+        {
+            StatusText = $"There is no keyframe controlling frame {CurrentFrameIndex} on {SelectedTrack.Name}.";
+            return;
+        }
+
+        RemoveKeyframeFromTrack(
+            SelectedTrack,
+            keyframe.Frame,
+            keyframe.Frame == CurrentFrameIndex
+                ? $"Removed the keyframe at frame {keyframe.Frame}."
+                : $"Removed the active keyframe at frame {keyframe.Frame} while viewing frame {CurrentFrameIndex}.");
     }
 
     private async void JumpToKeyframe_Click(object sender, RoutedEventArgs e)
@@ -768,9 +904,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        SelectedTrack.RemoveKeyframe(keyframe.Frame);
-        SyncDraftBoxFromSelectedTrack();
-        RefreshTrackAfterEdit(SelectedTrack, $"Deleted keyframe at frame {keyframe.Frame}.");
+        RemoveKeyframeFromTrack(SelectedTrack, keyframe.Frame, $"Deleted keyframe at frame {keyframe.Frame}.");
+    }
+
+    private void TrackSegmentBorder_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (sender is not Border { DataContext: TrackSegmentPreview segment, Tag: TimelineTrack track } border)
+        {
+            return;
+        }
+
+        SelectedTrack = track;
+
+        var keyframe = track.Keyframes.FirstOrDefault(item => item.Frame == segment.StartFrame);
+        var removeItem = new MenuItem
+        {
+            Header = "Remove Keyframe",
+            IsEnabled = keyframe is not null,
+            Tag = keyframe is null ? null : new SegmentMenuContext(track, segment),
+        };
+        removeItem.Click += RemoveSegmentKeyframeMenuItem_Click;
+
+        border.ContextMenu = new ContextMenu();
+        border.ContextMenu.Items.Add(removeItem);
+    }
+
+    private void RemoveSegmentKeyframeMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: SegmentMenuContext context })
+        {
+            return;
+        }
+
+        SelectedTrack = context.Track;
+        RemoveKeyframeFromTrack(
+            context.Track,
+            context.Segment.StartFrame,
+            $"Removed the keyframe at frame {context.Segment.StartFrame} from {context.Track.Name}.");
     }
 
     private async void Process_Click(object sender, RoutedEventArgs e)
@@ -851,6 +1021,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SyncDraftBoxFromSelectedTrack();
         RebuildOverlayBoxes();
         OnPropertyChanged(nameof(CanProcess));
+        OnPropertyChanged(nameof(CanRemoveKeyframeHere));
+        OnPropertyChanged(nameof(CanToggleTrackStateHere));
+        OnPropertyChanged(nameof(ToggleTrackHereLabel));
+        OnPropertyChanged(nameof(SelectedTrackStatus));
         OnPropertyChanged(nameof(SelectedTrackKeyframeStatus));
         StatusText = statusMessage;
     }
@@ -877,6 +1051,95 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DraftBox = active?.Enabled == true && active.Box is not null
             ? active.Box.Clone()
             : null;
+    }
+
+    private string BuildSelectedTrackStatus()
+    {
+        if (SelectedTrack is null)
+        {
+            return "Add or select a track, then draw a box directly on the frame.";
+        }
+
+        if (IsSelectedTrackEnabledAtCurrentFrame())
+        {
+            return $"Selected: {SelectedTrack.DisplayName}. This watermark is enabled on frame {CurrentFrameIndex}. Drag inside the box to move it, drag an edge to resize it, or disable it from this frame.";
+        }
+
+        return HasBoxToEnableHere()
+            ? $"Selected: {SelectedTrack.DisplayName}. This watermark is disabled on frame {CurrentFrameIndex}. Draw a new box or click Enable Here to restore the last enabled box."
+            : $"Selected: {SelectedTrack.DisplayName}. This watermark is disabled on frame {CurrentFrameIndex}. Draw a box on this frame to enable it here.";
+    }
+
+    private bool IsSelectedTrackEnabledAtCurrentFrame()
+    {
+        var active = SelectedTrack?.GetActiveKeyframe(CurrentFrameIndex);
+        return active?.Enabled == true && active.Box is not null;
+    }
+
+    private bool HasBoxToEnableHere()
+    {
+        return DraftBox is not null || FindLastEnabledBox(SelectedTrack, CurrentFrameIndex) is not null;
+    }
+
+    private BoxRect? ResolveBoxToEnableHere()
+    {
+        if (DraftBox is not null)
+        {
+            return DraftBox.Clone();
+        }
+
+        return FindLastEnabledBox(SelectedTrack, CurrentFrameIndex)?.Clone();
+    }
+
+    private static BoxRect? FindLastEnabledBox(TimelineTrack? track, int frameIndex)
+    {
+        if (track is null)
+        {
+            return null;
+        }
+
+        BoxRect? lastEnabledBox = null;
+        foreach (var keyframe in track.OrderedKeyframes())
+        {
+            if (keyframe.Frame > frameIndex)
+            {
+                break;
+            }
+
+            if (keyframe.Enabled && keyframe.Box is not null)
+            {
+                lastEnabledBox = keyframe.Box;
+            }
+        }
+
+        return lastEnabledBox;
+    }
+
+    private void SaveDraftBoxToCurrentFrame(TimelineTrack track, string statusMessage)
+    {
+        if (DraftBox is null)
+        {
+            return;
+        }
+
+        track.UpsertKeyframe(new BoxKeyframe
+        {
+            Frame = CurrentFrameIndex,
+            Enabled = true,
+            Box = DraftBox.Clone(),
+        });
+        RefreshTrackAfterEdit(track, statusMessage);
+    }
+
+    private static BoxKeyframe? GetRemovableKeyframeAtCurrentFrame(TimelineTrack? track, int frameIndex)
+    {
+        return track?.GetActiveKeyframe(frameIndex);
+    }
+
+    private void RemoveKeyframeFromTrack(TimelineTrack track, int keyframeFrame, string statusMessage)
+    {
+        track.RemoveKeyframe(keyframeFrame);
+        RefreshTrackAfterEdit(track, statusMessage);
     }
 
     private void RebuildOverlayBoxes()
@@ -1179,7 +1442,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private BoxRect? NormalizeDraft(BoxRect? box)
     {
-        if (box is null || box.Width < 2 || box.Height < 2)
+        if (box is null || box.Width < MinimumBoxSize || box.Height < MinimumBoxSize)
         {
             return null;
         }
@@ -1201,6 +1464,190 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Width = Math.Max(0, x2 - x1),
             Height = Math.Max(0, y2 - y1),
         };
+    }
+
+    private bool TryGetOverlayInteraction(Point position, BoxRect? box, out OverlayInteractionMode interactionMode, out ResizeEdges resizeEdges)
+    {
+        resizeEdges = HitTestResizeEdges(box, position);
+        if (resizeEdges != ResizeEdges.None)
+        {
+            interactionMode = OverlayInteractionMode.Resize;
+            return true;
+        }
+
+        if (box is not null && IsPointInsideBox(box, position))
+        {
+            interactionMode = OverlayInteractionMode.Move;
+            return true;
+        }
+
+        interactionMode = OverlayInteractionMode.Draw;
+        return false;
+    }
+
+    private void ResetOverlayInteraction()
+    {
+        _overlayInteractionMode = OverlayInteractionMode.None;
+        _activeResizeEdges = ResizeEdges.None;
+        _interactionStartBox = null;
+        _overlayInteractionChanged = false;
+    }
+
+    private void UpdateOverlayCursor(Point position)
+    {
+        if (!CanEditTrack)
+        {
+            OverlayInputCanvas.Cursor = Cursors.Arrow;
+            return;
+        }
+
+        if (TryGetOverlayInteraction(position, DraftBox, out var interactionMode, out var resizeEdges))
+        {
+            OverlayInputCanvas.Cursor = GetCursorForInteraction(interactionMode, resizeEdges);
+            return;
+        }
+
+        OverlayInputCanvas.Cursor = Cursors.Cross;
+    }
+
+    private Cursor GetCursorForInteraction(OverlayInteractionMode interactionMode, ResizeEdges resizeEdges)
+    {
+        if (interactionMode == OverlayInteractionMode.Move)
+        {
+            return Cursors.SizeAll;
+        }
+
+        return resizeEdges switch
+        {
+            ResizeEdges.Left or ResizeEdges.Right => Cursors.SizeWE,
+            ResizeEdges.Top or ResizeEdges.Bottom => Cursors.SizeNS,
+            ResizeEdges.Left | ResizeEdges.Top => Cursors.SizeNWSE,
+            ResizeEdges.Right | ResizeEdges.Bottom => Cursors.SizeNWSE,
+            ResizeEdges.Right | ResizeEdges.Top => Cursors.SizeNESW,
+            ResizeEdges.Left | ResizeEdges.Bottom => Cursors.SizeNESW,
+            _ => Cursors.Cross,
+        };
+    }
+
+    private static ResizeEdges HitTestResizeEdges(BoxRect? box, Point position)
+    {
+        if (box is null)
+        {
+            return ResizeEdges.None;
+        }
+
+        var left = box.X;
+        var top = box.Y;
+        var right = box.Right;
+        var bottom = box.Bottom;
+        var withinVerticalGrip = position.Y >= top - ResizeGripSize && position.Y <= bottom + ResizeGripSize;
+        var withinHorizontalGrip = position.X >= left - ResizeGripSize && position.X <= right + ResizeGripSize;
+        var hitLeft = Math.Abs(position.X - left) <= ResizeGripSize && withinVerticalGrip;
+        var hitRight = Math.Abs(position.X - right) <= ResizeGripSize && withinVerticalGrip;
+        var hitTop = Math.Abs(position.Y - top) <= ResizeGripSize && withinHorizontalGrip;
+        var hitBottom = Math.Abs(position.Y - bottom) <= ResizeGripSize && withinHorizontalGrip;
+
+        var edges = ResizeEdges.None;
+        if (hitLeft)
+        {
+            edges |= ResizeEdges.Left;
+        }
+
+        if (hitRight)
+        {
+            edges |= ResizeEdges.Right;
+        }
+
+        if (hitTop)
+        {
+            edges |= ResizeEdges.Top;
+        }
+
+        if (hitBottom)
+        {
+            edges |= ResizeEdges.Bottom;
+        }
+
+        return edges;
+    }
+
+    private static bool IsPointInsideBox(BoxRect box, Point position)
+    {
+        return position.X >= box.X
+            && position.X <= box.Right
+            && position.Y >= box.Y
+            && position.Y <= box.Bottom;
+    }
+
+    private BoxRect TransformDraftBox(BoxRect startBox, Point currentPosition)
+    {
+        if (_overlayInteractionMode == OverlayInteractionMode.Move)
+        {
+            var movedX = Math.Clamp(
+                startBox.X + (int)Math.Round(currentPosition.X - _dragStart.X),
+                0,
+                Math.Max(0, FrameWidth - startBox.Width));
+            var movedY = Math.Clamp(
+                startBox.Y + (int)Math.Round(currentPosition.Y - _dragStart.Y),
+                0,
+                Math.Max(0, FrameHeight - startBox.Height));
+
+            return new BoxRect
+            {
+                X = movedX,
+                Y = movedY,
+                Width = startBox.Width,
+                Height = startBox.Height,
+            };
+        }
+
+        var left = startBox.X;
+        var top = startBox.Y;
+        var right = startBox.Right;
+        var bottom = startBox.Bottom;
+        var deltaX = (int)Math.Round(currentPosition.X - _dragStart.X);
+        var deltaY = (int)Math.Round(currentPosition.Y - _dragStart.Y);
+
+        if (_activeResizeEdges.HasFlag(ResizeEdges.Left))
+        {
+            left = Math.Clamp(startBox.X + deltaX, 0, right - MinimumBoxSize);
+        }
+
+        if (_activeResizeEdges.HasFlag(ResizeEdges.Right))
+        {
+            right = Math.Clamp(startBox.Right + deltaX, left + MinimumBoxSize, FrameWidth);
+        }
+
+        if (_activeResizeEdges.HasFlag(ResizeEdges.Top))
+        {
+            top = Math.Clamp(startBox.Y + deltaY, 0, bottom - MinimumBoxSize);
+        }
+
+        if (_activeResizeEdges.HasFlag(ResizeEdges.Bottom))
+        {
+            bottom = Math.Clamp(startBox.Bottom + deltaY, top + MinimumBoxSize, FrameHeight);
+        }
+
+        return new BoxRect
+        {
+            X = left,
+            Y = top,
+            Width = Math.Max(MinimumBoxSize, right - left),
+            Height = Math.Max(MinimumBoxSize, bottom - top),
+        };
+    }
+
+    private static bool BoxEquals(BoxRect? left, BoxRect? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return left.X == right.X
+            && left.Y == right.Y
+            && left.Width == right.Width
+            && left.Height == right.Height;
     }
 
     private bool SetProperty<T>(ref T storage, T value, [CallerMemberName] string? propertyName = null)
