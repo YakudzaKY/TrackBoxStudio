@@ -364,7 +364,10 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1">
-                    <ProgressBar Height="18" Minimum="0" Maximum="100" Value="{Binding ProgressValue}" />
+                    <ProgressBar Height="18"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding ProgressValue, Mode=OneWay}" />
                     <TextBlock Text="{Binding ProgressDisplay}" Foreground="#8B93A7" Margin="0,6,0,0" HorizontalAlignment="Right" />
                 </StackPanel>
             </Grid>
