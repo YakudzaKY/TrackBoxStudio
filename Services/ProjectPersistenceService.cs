@@ -52,31 +52,55 @@ public sealed class ProjectPersistenceService
     private static void ResolvePaths(TrackBoxProjectDocument document, string projectPath)
     {
         var baseDirectory = Path.GetDirectoryName(projectPath) ?? AppContext.BaseDirectory;
-        document.Media.ResolvedInputPath = ResolvePath(baseDirectory, document.Media.InputPathRelative, document.Media.InputPath);
-        document.Media.ResolvedOutputPath = ResolvePath(baseDirectory, document.Media.OutputPathRelative, document.Media.OutputPath);
+        document.Media.ResolvedInputPath = ResolveInputPath(baseDirectory, document.Media.InputPath, document.Media.InputPathRelative);
+        document.Media.ResolvedOutputPath = ResolveOutputPath(baseDirectory, document.Media.OutputPath, document.Media.OutputPathRelative);
     }
 
     private static void PopulateRelativePaths(TrackBoxProjectDocument document, string projectPath)
     {
         var baseDirectory = Path.GetDirectoryName(projectPath) ?? AppContext.BaseDirectory;
+        document.Media.InputPath = NormalizeAbsolutePath(document.Media.InputPath) ?? document.Media.InputPath;
+        document.Media.OutputPath = NormalizeAbsolutePath(document.Media.OutputPath) ?? document.Media.OutputPath;
         document.Media.InputPathRelative = BuildRelativePath(baseDirectory, document.Media.InputPath);
         document.Media.OutputPathRelative = BuildRelativePath(baseDirectory, document.Media.OutputPath);
         document.Media.ResolvedInputPath = document.Media.InputPath;
         document.Media.ResolvedOutputPath = document.Media.OutputPath;
     }
 
-    private static string? ResolvePath(string baseDirectory, string? relativePath, string? absolutePath)
+    private static string? ResolveInputPath(string baseDirectory, string? absolutePath, string? relativePath)
     {
-        if (!string.IsNullOrWhiteSpace(relativePath))
+        var normalizedAbsolutePath = NormalizeAbsolutePath(absolutePath);
+        var normalizedRelativePath = NormalizeRelativePath(baseDirectory, relativePath);
+
+        if (PathPointsToExistingFile(normalizedAbsolutePath))
         {
-            var combined = Path.GetFullPath(Path.Combine(baseDirectory, relativePath));
-            if (File.Exists(combined) || Directory.Exists(Path.GetDirectoryName(combined) ?? string.Empty))
-            {
-                return combined;
-            }
+            return normalizedAbsolutePath;
         }
 
-        return string.IsNullOrWhiteSpace(absolutePath) ? null : absolutePath;
+        if (PathPointsToExistingFile(normalizedRelativePath))
+        {
+            return normalizedRelativePath;
+        }
+
+        return normalizedAbsolutePath ?? normalizedRelativePath;
+    }
+
+    private static string? ResolveOutputPath(string baseDirectory, string? absolutePath, string? relativePath)
+    {
+        var normalizedAbsolutePath = NormalizeAbsolutePath(absolutePath);
+        var normalizedRelativePath = NormalizeRelativePath(baseDirectory, relativePath);
+
+        if (PathPointsToExistingFile(normalizedAbsolutePath) || PathHasExistingParentDirectory(normalizedAbsolutePath))
+        {
+            return normalizedAbsolutePath;
+        }
+
+        if (PathPointsToExistingFile(normalizedRelativePath) || PathHasExistingParentDirectory(normalizedRelativePath))
+        {
+            return normalizedRelativePath;
+        }
+
+        return normalizedAbsolutePath ?? normalizedRelativePath;
     }
 
     private static string? BuildRelativePath(string baseDirectory, string? absolutePath)
@@ -87,5 +111,45 @@ public sealed class ProjectPersistenceService
         }
 
         return Path.GetRelativePath(baseDirectory, absolutePath);
+    }
+
+    private static string? NormalizeAbsolutePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
+        {
+            return null;
+        }
+
+        return Path.GetFullPath(path);
+    }
+
+    private static string? NormalizeRelativePath(string baseDirectory, string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return null;
+        }
+
+        var candidatePath = Path.IsPathRooted(relativePath)
+            ? relativePath
+            : Path.Combine(baseDirectory, relativePath);
+
+        return Path.GetFullPath(candidatePath);
+    }
+
+    private static bool PathPointsToExistingFile(string? path)
+    {
+        return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+    }
+
+    private static bool PathHasExistingParentDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var directory = Path.GetDirectoryName(path);
+        return !string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory);
     }
 }
