@@ -13,4 +13,8 @@
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
   </ItemGroup>
 
+  <Target Name="BuildTests" AfterTargets="Build">
+    <MSBuild Projects="TrackBoxStudio.Tests/TrackBoxStudio.Tests.csproj" Targets="Build" Properties="Configuration=$(Configuration);Platform=$(Platform)" />
+  </Target>
+
 </Project>
