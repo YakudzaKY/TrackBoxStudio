@@ -423,6 +423,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
+            App.LogError(ex, "Media Open Error");
             MessageBox.Show(this, ex.Message, "Open failed", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText = $"Open failed: {ex.Message}";
         }
@@ -453,6 +454,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
+            App.LogError(ex, "Project Open Error");
             MessageBox.Show(this, ex.Message, "Open project failed", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText = $"Open project failed: {ex.Message}";
         }
@@ -500,6 +502,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
+            App.LogError(ex, "Project Save Error");
             MessageBox.Show(this, ex.Message, "Save project failed", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText = $"Save project failed: {ex.Message}";
         }
@@ -685,7 +688,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async void FrameLoadTimer_Tick(object? sender, EventArgs e)
     {
         _frameLoadTimer.Stop();
-        await LoadFrameAsync(_pendingFrameIndex);
+        try
+        {
+            await LoadFrameAsync(_pendingFrameIndex);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Frame load failed: {ex.Message}";
+        }
     }
 
     private async Task LoadFrameAsync(int frameIndex)
@@ -711,7 +721,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            StatusText = $"Frame load failed: {ex.Message}";
+            App.LogError(ex, "Frame Load Error");
+            throw;
         }
     }
 
@@ -892,9 +903,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        CurrentFrameIndex = keyframe.Frame;
-        FrameSlider.Value = keyframe.Frame;
-        await LoadFrameAsync(keyframe.Frame);
+        try
+        {
+            CurrentFrameIndex = keyframe.Frame;
+            FrameSlider.Value = keyframe.Frame;
+            await LoadFrameAsync(keyframe.Frame);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Frame load failed: {ex.Message}";
+        }
     }
 
     private void DeleteKeyframe_Click(object sender, RoutedEventArgs e)
@@ -970,6 +988,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
+            App.LogError(ex, "Processing Error");
             MessageBox.Show(this, ex.Message, "Processing failed", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText = $"Processing failed: {ex.Message}";
         }
