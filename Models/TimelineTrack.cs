@@ -75,7 +75,7 @@ public sealed class TimelineTrack : BindableBase
 
     public IEnumerable<BoxKeyframe> OrderedKeyframes()
     {
-        return Keyframes.OrderBy(keyframe => keyframe.Frame);
+        return Keyframes;
     }
 
     public BoxKeyframe? GetActiveKeyframe(int frameIndex)
