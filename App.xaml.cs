@@ -16,6 +16,11 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
     }
 
+    public static void LogError(Exception ex, string category = "Error")
+    {
+        WriteErrorLog(ex, category);
+    }
+
     private void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         ShowFatalError(e.Exception);
@@ -37,7 +42,7 @@ public partial class App : Application
 
     private static void ShowFatalError(Exception exception)
     {
-        var logPath = WriteFatalErrorLog(exception);
+        var logPath = WriteErrorLog(exception, "Fatal Error");
 
         MessageBox.Show(
             "TrackBoxStudio failed to start or encountered a fatal error.\n\n" +
@@ -48,7 +53,7 @@ public partial class App : Application
             MessageBoxImage.Error);
     }
 
-    private static string WriteFatalErrorLog(Exception exception)
+    private static string WriteErrorLog(Exception exception, string category)
     {
         try
         {
@@ -58,7 +63,7 @@ public partial class App : Application
             var logPath = Path.Combine(logDirectory, "trackboxstudio-error.log");
             var content = new StringBuilder()
                 .AppendLine($"Timestamp: {DateTimeOffset.Now:O}")
-                .AppendLine("Unhandled exception:")
+                .AppendLine($"{category}:")
                 .AppendLine(exception.ToString())
                 .AppendLine()
                 .ToString();

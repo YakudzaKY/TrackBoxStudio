@@ -22,5 +22,4 @@ if not "%EXIT_CODE%"=="0" (
 
 echo.
 echo Build completed successfully.
-pause
 exit /b 0

@@ -16,5 +16,10 @@
   <Target Name="BuildTests" AfterTargets="Build">
     <MSBuild Projects="TrackBoxStudio.Tests/TrackBoxStudio.Tests.csproj" Targets="Build" Properties="Configuration=$(Configuration);Platform=$(Platform)" />
   </Target>
+  <ItemGroup>
+    <Content Include="Scripts\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
 </Project>

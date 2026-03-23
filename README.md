@@ -14,19 +14,21 @@ The project is built around one idea: stop trusting weak auto-detection, and let
 - Lets you disable a watermark on any frame by writing an "off" keyframe
 - Shows enabled and disabled ranges directly on each track
 - Saves and reopens full timeline sessions as `.trackbox.json` project files
-- Processes the file by inpainting only the boxes that are enabled on the active frame
+- Processes the file by running real LaMa inpainting only on the boxes that are enabled on the active frame
 
 ## Current stack
 
 - .NET 10
 - WPF
-- OpenCvSharp for frame access and inpainting
+- OpenCvSharp for frame access and media IO
+- Python sidecar runner with `iopaint` LaMa for final cleanup quality
 
 ## Project layout
 
 - `MainWindow.xaml` and `MainWindow.xaml.cs`: main editor UI and interaction flow
 - `Models/`: watermark, track, keyframe, and overlay models
 - `Services/`: registry storage, media loading, bitmap conversion, and processing
+- `Scripts/lama_inpaint_runner.py`: manual-timeline LaMa backend used for final processing
 - `Dialogs/`: small prompt dialog for creating and renaming watermark definitions
 - `Data/watermark-registry.json`: named watermark registry stored beside the app
 - `*.trackbox.json`: reusable project files with media paths, tracks, keyframes, and future learning metadata
@@ -58,6 +60,9 @@ dotnet run
 - If `ffmpeg.exe` is available in `PATH`, TrackBoxStudio will try to preserve audio when exporting video.
 - If `ffmpeg.exe` is not available, the processed video is still exported, but audio may be dropped.
 - Project files already contain a small `learning` block reserved for future ML-assisted workflows, but no training code is enabled in the current build.
+- Final inpainting quality depends on a compatible LaMa Python environment. By default the app looks for `TRACKBOX_PYTHON_EXE`, then a bundled `python\python.exe`, then the sibling dev environment at `D:\git\Lama\python\python.exe`.
+- Device selection is `CUDA preferred` by default: on systems with working CUDA it will load LaMa on GPU, and only fall back to CPU if CUDA is unavailable.
+- The current default processing profile is `Max Quality`: 100 LaMa steps, larger crop margin, higher resize limit, and a small mask padding around the user box.
 
 ## Usage policy
 
