@@ -175,12 +175,21 @@ public sealed class InpaintProcessingService
             return;
         }
 
-        var arguments =
-            $"-y -i \"{tempVideoPath}\" -i \"{inputPath}\" -map 0:v:0 -map 1:a? -c:v copy -c:a aac -shortest \"{outputPath}\"";
         var startInfo = new ProcessStartInfo
         {
             FileName = ffmpeg,
-            Arguments = arguments,
+            ArgumentList =
+            {
+                "-y",
+                "-i", tempVideoPath,
+                "-i", inputPath,
+                "-map", "0:v:0",
+                "-map", "1:a?",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                outputPath,
+            },
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardError = true,
