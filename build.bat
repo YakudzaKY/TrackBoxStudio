@@ -9,7 +9,7 @@ if "%CONFIGURATION%"=="" set "CONFIGURATION=Release"
 pushd "%ROOT_DIR%" >nul
 
 echo Building TrackBoxStudio with configuration %CONFIGURATION%...
-dotnet build "TrackBoxStudio.csproj" -c "%CONFIGURATION%"
+dotnet build "TrackBoxStudio.slnx" -c "%CONFIGURATION%"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 popd >nul
