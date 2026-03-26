@@ -254,76 +254,6 @@ def process_image_with_lama(image_bgr: np.ndarray, mask: np.ndarray, model_manag
     return result
 
 
-def process_image_with_whiteness_delta(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    if cv2.countNonZero(mask) == 0:
-        return image_bgr
-
-    output = image_bgr.astype(np.float32, copy=True)
-    working_mask = (mask > 0).astype(np.uint8)
-    component_count, labels = cv2.connectedComponents(working_mask, connectivity=8)
-
-    for component_index in range(1, component_count):
-        component_mask = labels == component_index
-        if not np.any(component_mask):
-            continue
-
-        component_u8 = np.where(component_mask, 255, 0).astype(np.uint8)
-        ring_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        ring_mask = cv2.dilate(component_u8, ring_kernel, iterations=1)
-        ring_mask = np.where((ring_mask > 0) & (~component_mask), 255, 0).astype(np.uint8)
-
-        if cv2.countNonZero(ring_mask) == 0:
-            ring_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-            ring_mask = cv2.dilate(component_u8, ring_kernel, iterations=1)
-            ring_mask = np.where((ring_mask > 0) & (~component_mask), 255, 0).astype(np.uint8)
-            if cv2.countNonZero(ring_mask) == 0:
-                continue
-
-        ring_pixels = image_bgr[ring_mask > 0].astype(np.float32, copy=False)
-        target_bgr = ring_pixels.mean(axis=0)
-        source_pixels = output[component_mask]
-
-        source_gray = 0.114 * source_pixels[:, 0] + 0.587 * source_pixels[:, 1] + 0.299 * source_pixels[:, 2]
-        target_gray = float(0.114 * target_bgr[0] + 0.587 * target_bgr[1] + 0.299 * target_bgr[2])
-        delta = np.clip((source_gray - target_gray) / 255.0, 0.0, 1.0)
-        strength = np.clip(0.2 + 1.15 * delta, 0.2, 1.0)[:, None]
-
-        corrected = source_pixels * (1.0 - strength) + target_bgr[None, :] * strength
-        output[component_mask] = corrected
-
-    return np.clip(output, 0, 255).astype(np.uint8)
-
-
-def process_image_with_telea(image_bgr: np.ndarray, mask: np.ndarray, job: dict) -> np.ndarray:
-    radius = float(job.get("opencvInpaintRadius", 3.0))
-    return cv2.inpaint(image_bgr, mask, max(0.5, radius), cv2.INPAINT_TELEA)
-
-
-def process_image_with_ns(image_bgr: np.ndarray, mask: np.ndarray, job: dict) -> np.ndarray:
-    radius = float(job.get("opencvInpaintRadius", 3.0))
-    return cv2.inpaint(image_bgr, mask, max(0.5, radius), cv2.INPAINT_NS)
-
-
-def process_image_with_selected_strategy(
-    image_bgr: np.ndarray,
-    mask: np.ndarray,
-    model_manager: ModelManager | None,
-    job: dict,
-) -> np.ndarray:
-    strategy = str(job.get("inpaintStrategy", "lama")).strip().lower() or "lama"
-    if strategy == "whiteness-delta":
-        return process_image_with_whiteness_delta(image_bgr, mask)
-    if strategy == "opencv-telea":
-        return process_image_with_telea(image_bgr, mask, job)
-    if strategy == "opencv-ns":
-        return process_image_with_ns(image_bgr, mask, job)
-    if strategy == "lama":
-        if model_manager is None:
-            raise RuntimeError("LaMa model was not initialized for inpaint processing.")
-        return process_image_with_lama(image_bgr, mask, model_manager, job)
-    raise RuntimeError(f"Unsupported inpaint strategy: {strategy}")
-
-
 def compute_whiteness_map(frame_bgr: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
@@ -651,7 +581,10 @@ def process_image(input_path: str, output_path: str, tracks: list[dict], model_m
         emit_progress(1.0)
         return
 
-    result_frame = render_mask_overlay(image_bgr, mask) if render_mask_only else process_image_with_selected_strategy(image_bgr, mask, model_manager, job)
+    if not render_mask_only and model_manager is None:
+        raise RuntimeError("LaMa model was not initialized for inpaint processing.")
+
+    result_frame = render_mask_overlay(image_bgr, mask) if render_mask_only else process_image_with_lama(image_bgr, mask, model_manager, job)
     cv2.imwrite(output_path, result_frame)
     emit_progress(1.0)
 
@@ -743,7 +676,9 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
             elif render_mask_only:
                 output_frame = render_mask_overlay(frame, frame_mask)
             else:
-                output_frame = process_image_with_selected_strategy(frame, frame_mask, model_manager, job)
+                if model_manager is None:
+                    raise RuntimeError("LaMa model was not initialized for inpaint processing.")
+                output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
             save_temp_array(processed_directory, frame_index, output_frame)
 
             if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
@@ -787,25 +722,16 @@ def main() -> int:
     tracks = job.get("tracks", [])
     mask_padding = max(0, int(job.get("maskPadding", 0)))
     render_mask_only = bool(job.get("renderMaskOnly", False))
-    inpaint_strategy = str(job.get("inpaintStrategy", "lama")).strip().lower() or "lama"
     model_manager: ModelManager | None = None
     if render_mask_only:
         emit_status("Stable mask preview mode enabled.")
-    elif inpaint_strategy == "lama":
+    else:
         device = resolve_device(job.get("devicePreference", "cuda-preferred"))
         quality_preset = str(job.get("qualityPreset", "max")).strip() or "max"
 
         emit_status(f"Loading LaMa model on {device} ({quality_preset} quality)...")
         model_manager = load_lama_model(device)
         emit_status("LaMa model loaded.")
-    elif inpaint_strategy == "whiteness-delta":
-        emit_status("Using whiteness-delta inpaint strategy.")
-    elif inpaint_strategy == "opencv-telea":
-        emit_status("Using OpenCV Telea inpaint strategy.")
-    elif inpaint_strategy == "opencv-ns":
-        emit_status("Using OpenCV Navier-Stokes inpaint strategy.")
-    else:
-        raise RuntimeError(f"Unsupported inpaint strategy: {inpaint_strategy}")
 
     suffix = Path(input_path).suffix.lower()
     if suffix in VIDEO_EXTENSIONS:
@@ -813,7 +739,7 @@ def main() -> int:
     else:
         process_image(input_path, output_path, tracks, model_manager, job, mask_padding)
 
-    emit_status("Inpaint processing finished.")
+    emit_status("LaMa processing finished.")
     return 0
 
 
