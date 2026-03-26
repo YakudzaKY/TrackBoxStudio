@@ -25,6 +25,9 @@ public sealed class InpaintCoverageSettingsService
         new("mask_close_radius", "Stable Mask", "Join Radius", "Morphological close radius to connect tiny gaps inside the stable mask.", 2, true),
         new("mask_expand_radius", "Stable Mask", "Expand Pixels", "Expand the final stable mask by this many pixels before inpaint.", 6, true),
         new("mask_min_component_area", "Stable Mask", "Min Component Area", "Remove tiny islands smaller than this many pixels.", 24, true),
+        new("temporal_blend_enabled", "Temporal Blend", "Enable Blend", "1 = blend each segment forward from start using frame (start-1) as anchor; 0 = disable.", 1, true),
+        new("temporal_blend_edge_strength", "Temporal Blend", "Start Strength", "Blend weight at the segment start (0..1). Higher values smooth flicker but can pull more source texture.", 0.26, false),
+        new("temporal_blend_falloff_power", "Temporal Blend", "Decay Power", "How fast forward blend decays from segment start to end. Higher values keep later frames cleaner.", 1.35, false),
     ];
 
     private readonly string _dataDirectory;
