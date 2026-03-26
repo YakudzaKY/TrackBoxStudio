@@ -47,7 +47,6 @@ public sealed class InpaintCoveragePreviewService
                 inputVideoPath,
                 maskVideoPath,
                 BuildPreviewTracks(),
-                renderMaskOnly: true,
                 progress: null,
                 status,
                 cancellationToken);

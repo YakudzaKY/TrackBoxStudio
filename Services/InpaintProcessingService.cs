@@ -18,7 +18,6 @@ public sealed class InpaintProcessingService
         string inputPath,
         string outputPath,
         IReadOnlyList<TimelineTrack> tracks,
-        bool renderMaskOnly,
         IProgress<double>? progress,
         IProgress<string>? status,
         CancellationToken cancellationToken)
@@ -38,7 +37,7 @@ public sealed class InpaintProcessingService
             throw new InvalidOperationException("There are no timeline keyframes to process.");
         }
 
-        var job = BuildJob(inputPath, outputPath, tracks, renderMaskOnly);
+        var job = BuildJob(inputPath, outputPath, tracks);
         var payloadPath = Path.Combine(Path.GetTempPath(), $"trackbox-lama-{Guid.NewGuid():N}.json");
 
         try
@@ -59,7 +58,7 @@ public sealed class InpaintProcessingService
         }
     }
 
-    private static LamaProcessingJobDocument BuildJob(string inputPath, string outputPath, IReadOnlyList<TimelineTrack> tracks, bool renderMaskOnly)
+    private static LamaProcessingJobDocument BuildJob(string inputPath, string outputPath, IReadOnlyList<TimelineTrack> tracks)
     {
         return new LamaProcessingJobDocument
         {
@@ -72,7 +71,6 @@ public sealed class InpaintProcessingService
             CropMargin = 128,
             CropTriggerSize = 800,
             ResizeLimit = 2048,
-            RenderMaskOnly = renderMaskOnly,
             Tracks = tracks
                 .Where(track => track.Keyframes.Count > 0)
                 .Select(track => new LamaProcessingTrackDocument
