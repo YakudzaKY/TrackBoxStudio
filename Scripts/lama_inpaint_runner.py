@@ -70,6 +70,12 @@ DEFAULT_COVERAGE_CONFIG = {
     "mask_expand_radius": 6,
     # Remove very tiny islands before and after expansion.
     "mask_min_component_area": 24,
+    # 0 disables temporal cross-frame blend; 1 enables it.
+    "temporal_blend_enabled": 1,
+    # Max blend weight near segment edges (0..1).
+    "temporal_blend_edge_strength": 0.26,
+    # Exponent for edge-to-center fade curve (>= 0.1).
+    "temporal_blend_falloff_power": 1.35,
 }
 
 COVERAGE_CONFIG = merge_coverage_config(DEFAULT_COVERAGE_CONFIG)
@@ -82,6 +88,9 @@ STABLE_MASK_PRESENCE_RATIO = COVERAGE_CONFIG["stable_mask_presence_ratio"]
 MASK_CLOSE_RADIUS = COVERAGE_CONFIG["mask_close_radius"]
 MASK_EXPAND_RADIUS = COVERAGE_CONFIG["mask_expand_radius"]
 MASK_MIN_COMPONENT_AREA = COVERAGE_CONFIG["mask_min_component_area"]
+TEMPORAL_BLEND_ENABLED = int(COVERAGE_CONFIG["temporal_blend_enabled"]) > 0
+TEMPORAL_BLEND_EDGE_STRENGTH = COVERAGE_CONFIG["temporal_blend_edge_strength"]
+TEMPORAL_BLEND_FALLOFF_POWER = COVERAGE_CONFIG["temporal_blend_falloff_power"]
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
 
@@ -394,6 +403,103 @@ def compose_frame_mask(frame_shape: tuple[int, int, int], plans: list[SegmentMas
     return mask
 
 
+def blend_frame_region_with_anchor(
+    frame_bgr: np.ndarray,
+    anchor_bgr: np.ndarray,
+    plan: SegmentMaskPlan,
+    blend_alpha: float,
+) -> np.ndarray:
+    if blend_alpha <= 0.0:
+        return frame_bgr
+
+    x, y, w, h = plan.rect
+    if w <= 0 or h <= 0:
+        return frame_bgr
+
+    local_mask = plan.local_mask
+    if local_mask.size == 0 or cv2.countNonZero(local_mask) == 0:
+        return frame_bgr
+
+    frame_crop = frame_bgr[y : y + h, x : x + w]
+    anchor_crop = anchor_bgr[y : y + h, x : x + w]
+    if frame_crop.shape != anchor_crop.shape or frame_crop.shape[:2] != local_mask.shape[:2]:
+        return frame_bgr
+
+    alpha_map = (local_mask.astype(np.float32) / 255.0) * float(blend_alpha)
+    if np.max(alpha_map) <= 0.0:
+        return frame_bgr
+
+    alpha_map = alpha_map[..., None]
+    blended_crop = frame_crop.astype(np.float32) * (1.0 - alpha_map) + anchor_crop.astype(np.float32) * alpha_map
+    frame_crop[...] = np.clip(blended_crop, 0.0, 255.0).astype(np.uint8)
+    return frame_bgr
+
+
+def compute_temporal_blend_alpha(frame_index: int, start_frame: int, end_frame: int) -> float:
+    span = max(1, end_frame - start_frame + 1)
+    if span <= 1:
+        return max(0.0, min(1.0, float(TEMPORAL_BLEND_EDGE_STRENGTH)))
+
+    distance_to_edge = min(frame_index - start_frame, end_frame - frame_index)
+    max_distance = max(1, (span - 1) / 2.0)
+    normalized = max(0.0, min(1.0, distance_to_edge / max_distance))
+    center_fade = 1.0 - (normalized ** max(0.1, float(TEMPORAL_BLEND_FALLOFF_POWER)))
+    return max(0.0, min(1.0, float(TEMPORAL_BLEND_EDGE_STRENGTH) * center_fade))
+
+
+def apply_temporal_segment_blend(
+    frame_count: int,
+    source_directory: str,
+    processed_directory: str,
+    segment_plans: list[SegmentMaskPlan],
+) -> None:
+    if not TEMPORAL_BLEND_ENABLED or not segment_plans:
+        return
+
+    emit_status("Applying temporal edge-to-center blend for inpainted ranges...")
+    total_plans = max(1, len(segment_plans))
+    progress_stride = max(1, total_plans // 60)
+
+    for plan_index, plan in enumerate(segment_plans, start=1):
+        start = max(0, plan.start_frame)
+        end = min(frame_count - 1, plan.end_frame)
+        if start > end:
+            continue
+
+        prev_anchor = load_temp_array(source_directory, start - 1).astype(np.uint8, copy=False) if start > 0 else None
+        next_anchor = load_temp_array(source_directory, end + 1).astype(np.uint8, copy=False) if end < frame_count - 1 else None
+        if prev_anchor is None and next_anchor is None:
+            continue
+
+        left = start
+        right = end
+        use_left = True
+        while left <= right:
+            if use_left:
+                frame_index = left
+                left += 1
+                anchor = prev_anchor if prev_anchor is not None else next_anchor
+            else:
+                frame_index = right
+                right -= 1
+                anchor = next_anchor if next_anchor is not None else prev_anchor
+
+            use_left = not use_left
+            if anchor is None:
+                continue
+
+            blend_alpha = compute_temporal_blend_alpha(frame_index, start, end)
+            if blend_alpha <= 0.0:
+                continue
+
+            frame = load_temp_array(processed_directory, frame_index).astype(np.uint8, copy=False)
+            frame = blend_frame_region_with_anchor(frame, anchor, plan, blend_alpha)
+            save_temp_array(processed_directory, frame_index, frame)
+
+        if plan_index == total_plans or plan_index % progress_stride == 0:
+            emit_progress(0.86 + 0.09 * (plan_index / total_plans))
+
+
 def resolve_ffmpeg() -> str | None:
     return shutil.which("ffmpeg.exe") or shutil.which("ffmpeg")
 
@@ -494,8 +600,10 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
 
     temp_directory = tempfile.mkdtemp(prefix="trackbox-lama-")
     source_directory = os.path.join(temp_directory, "source-frames")
+    processed_directory = os.path.join(temp_directory, "processed-frames")
     temp_video_path = os.path.join(temp_directory, "video-temp.mp4")
     os.makedirs(source_directory, exist_ok=True)
+    os.makedirs(processed_directory, exist_ok=True)
 
     writer: cv2.VideoWriter | None = None
 
@@ -555,10 +663,19 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
                 output_frame = frame
             else:
                 output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
-            writer.write(output_frame)
+            save_temp_array(processed_directory, frame_index, output_frame)
 
             if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
-                emit_progress(0.55 + 0.45 * ((frame_index + 1) / frame_count))
+                emit_progress(0.55 + 0.30 * ((frame_index + 1) / frame_count))
+
+        apply_temporal_segment_blend(frame_count, source_directory, processed_directory, segment_plans)
+
+        emit_status("Encoding output video...")
+        for frame_index in range(frame_count):
+            output_frame = load_temp_array(processed_directory, frame_index).astype(np.uint8, copy=False)
+            writer.write(output_frame)
+            if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
+                emit_progress(0.95 + 0.05 * ((frame_index + 1) / frame_count))
 
         writer.release()
         writer = None
