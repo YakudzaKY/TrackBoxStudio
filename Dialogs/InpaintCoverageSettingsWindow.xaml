@@ -30,12 +30,6 @@
             <Setter Property="BorderBrush" Value="#31384C" />
             <Setter Property="Padding" Value="10,8" />
         </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="Background" Value="#0F1118" />
-            <Setter Property="BorderBrush" Value="#31384C" />
-            <Setter Property="Padding" Value="8,6" />
-        </Style>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -214,24 +208,12 @@
                                        TextWrapping="Wrap" />
                         </StackPanel>
 
-                        <StackPanel DockPanel.Dock="Right"
-                                    Orientation="Horizontal"
-                                    VerticalAlignment="Center">
-                            <StackPanel Margin="0,0,10,0">
-                                <TextBlock Text="Strategy"
-                                           Foreground="#8B93A7"
-                                           FontSize="12"
-                                           FontWeight="SemiBold" />
-                                <ComboBox Width="180"
-                                          ItemsSource="{Binding InpaintStrategyOptions}"
-                                          SelectedItem="{Binding SelectedInpaintStrategy, Mode=TwoWay}" />
-                            </StackPanel>
-                            <Button Content="Try"
-                                    Width="120"
-                                    Background="#4ADE80"
-                                    Foreground="#06140C"
-                                    Click="Try_Click" />
-                        </StackPanel>
+                        <Button Content="Try"
+                                DockPanel.Dock="Right"
+                                Width="120"
+                                Background="#4ADE80"
+                                Foreground="#06140C"
+                                Click="Try_Click" />
                     </DockPanel>
                 </Border>
 

@@ -10,8 +10,6 @@ public sealed class LamaProcessingJobDocument
 
     public string DevicePreference { get; set; } = "cuda-preferred";
 
-    public string InpaintStrategy { get; set; } = "lama";
-
     public int MaskPadding { get; set; } = 16;
 
     public int LdmSteps { get; set; } = 100;
