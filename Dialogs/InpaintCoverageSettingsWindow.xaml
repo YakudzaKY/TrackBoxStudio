@@ -112,11 +112,26 @@
                                                        Foreground="#8B93A7"
                                                        FontSize="11"
                                                        FontWeight="SemiBold" />
-                                            <TextBlock Text="{Binding DisplayName}"
-                                                       Foreground="White"
-                                                       FontSize="15"
-                                                       FontWeight="SemiBold"
-                                                       Margin="0,4,0,0" />
+                                            <Grid Margin="0,4,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           Foreground="White"
+                                                           FontSize="15"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center" />
+                                                <Button Grid.Column="1"
+                                                        Content="Reset"
+                                                        MinWidth="76"
+                                                        Margin="12,0,0,0"
+                                                        Padding="10,4"
+                                                        VerticalAlignment="Center"
+                                                        IsEnabled="{Binding CanResetToDefault}"
+                                                        Click="ResetEntryToDefault_Click" />
+                                            </Grid>
                                             <TextBlock Text="{Binding Description}"
                                                        Foreground="#AAB3C5"
                                                        Margin="0,6,0,0"
