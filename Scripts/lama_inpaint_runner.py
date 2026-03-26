@@ -55,7 +55,7 @@ def merge_coverage_config(defaults: dict[str, int | float]) -> dict[str, int | f
 
 DEFAULT_COVERAGE_CONFIG = {
     # Lower = dimmer white-ish pixels start contributing to the stable mask.
-    "mask_min_whiteness": 0.46,
+    "mask_min_whiteness": 0.43,
     # Lower = darker but still bright watermark pixels are allowed into the stable mask.
     "mask_min_luminance": 0.50,
     # Lower = more frames are treated as outliers when the crop changes too much.
@@ -67,7 +67,7 @@ DEFAULT_COVERAGE_CONFIG = {
     # Morphological close to connect tiny gaps inside the stable mask.
     "mask_close_radius": 2,
     # Expand the final stable mask by this many pixels before inpaint.
-    "mask_expand_radius": 6,
+    "mask_expand_radius": 4,
     # Remove very tiny islands before and after expansion.
     "mask_min_component_area": 24,
     # 0 disables temporal cross-frame blend; 1 enables forward blend from segment start.
@@ -403,6 +403,30 @@ def compose_frame_mask(frame_shape: tuple[int, int, int], plans: list[SegmentMas
     return mask
 
 
+def render_mask_overlay(frame_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    if mask.size == 0 or cv2.countNonZero(mask) == 0:
+        return frame_bgr.copy()
+
+    alpha_map = (mask.astype(np.float32) / 255.0) * 0.42
+    if np.max(alpha_map) <= 0.0:
+        return frame_bgr.copy()
+
+    alpha_map = alpha_map[..., None]
+    tint = np.zeros_like(frame_bgr)
+    tint[..., 0] = 48
+    tint[..., 1] = 220
+    tint[..., 2] = 96
+
+    blended = frame_bgr.astype(np.float32) * (1.0 - alpha_map) + tint.astype(np.float32) * alpha_map
+    result = np.clip(blended, 0.0, 255.0).astype(np.uint8)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        cv2.drawContours(result, contours, -1, (96, 255, 160), 1, lineType=cv2.LINE_AA)
+
+    return result
+
+
 def blend_frame_region_with_anchor(
     frame_bgr: np.ndarray,
     anchor_bgr: np.ndarray,
@@ -529,8 +553,9 @@ def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: s
     move_temp_to_output(temp_video_path, output_path)
 
 
-def process_image(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
-    emit_status("Processing image with stable watermark mask...")
+def process_image(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager | None, job: dict, mask_padding: int) -> None:
+    render_mask_only = bool(job.get("renderMaskOnly", False))
+    emit_status("Rendering stable watermark mask preview..." if render_mask_only else "Processing image with stable watermark mask...")
     image_bgr = cv2.imread(input_path, cv2.IMREAD_COLOR)
     if image_bgr is None or image_bgr.size == 0:
         raise RuntimeError(f"Failed to read image: {input_path}")
@@ -556,7 +581,10 @@ def process_image(input_path: str, output_path: str, tracks: list[dict], model_m
         emit_progress(1.0)
         return
 
-    result_frame = process_image_with_lama(image_bgr, mask, model_manager, job)
+    if not render_mask_only and model_manager is None:
+        raise RuntimeError("LaMa model was not initialized for inpaint processing.")
+
+    result_frame = render_mask_overlay(image_bgr, mask) if render_mask_only else process_image_with_lama(image_bgr, mask, model_manager, job)
     cv2.imwrite(output_path, result_frame)
     emit_progress(1.0)
 
@@ -567,7 +595,8 @@ def save_single_frame_temp_directory(frame: np.ndarray) -> str:
     return temp_directory
 
 
-def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
+def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager | None, job: dict, mask_padding: int) -> None:
+    render_mask_only = bool(job.get("renderMaskOnly", False))
     emit_status("Opening video...")
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
@@ -636,22 +665,27 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
         if not writer.isOpened():
             raise RuntimeError(f"Failed to create output video: {temp_video_path}")
 
-        emit_status("Applying identical segment masks across each enabled range...")
+        emit_status("Rendering stable mask overlay preview..." if render_mask_only else "Applying identical segment masks across each enabled range...")
         progress_stride = max(1, frame_count // 200)
 
         for frame_index in range(frame_count):
             frame = load_temp_array(source_directory, frame_index).astype(np.uint8, copy=False)
             frame_mask = compose_frame_mask(frame.shape, plans_by_frame[frame_index])
             if cv2.countNonZero(frame_mask) == 0:
-                output_frame = frame
+                output_frame = frame.copy() if render_mask_only else frame
+            elif render_mask_only:
+                output_frame = render_mask_overlay(frame, frame_mask)
             else:
+                if model_manager is None:
+                    raise RuntimeError("LaMa model was not initialized for inpaint processing.")
                 output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
             save_temp_array(processed_directory, frame_index, output_frame)
 
             if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
                 emit_progress(0.55 + 0.30 * ((frame_index + 1) / frame_count))
 
-        apply_temporal_segment_blend(frame_count, source_directory, processed_directory, segment_plans)
+        if not render_mask_only:
+            apply_temporal_segment_blend(frame_count, source_directory, processed_directory, segment_plans)
 
         emit_status("Encoding output video...")
         for frame_index in range(frame_count):
@@ -687,12 +721,17 @@ def main() -> int:
     output_path = job["outputPath"]
     tracks = job.get("tracks", [])
     mask_padding = max(0, int(job.get("maskPadding", 0)))
-    device = resolve_device(job.get("devicePreference", "cuda-preferred"))
-    quality_preset = str(job.get("qualityPreset", "max")).strip() or "max"
+    render_mask_only = bool(job.get("renderMaskOnly", False))
+    model_manager: ModelManager | None = None
+    if render_mask_only:
+        emit_status("Stable mask preview mode enabled.")
+    else:
+        device = resolve_device(job.get("devicePreference", "cuda-preferred"))
+        quality_preset = str(job.get("qualityPreset", "max")).strip() or "max"
 
-    emit_status(f"Loading LaMa model on {device} ({quality_preset} quality)...")
-    model_manager = load_lama_model(device)
-    emit_status("LaMa model loaded.")
+        emit_status(f"Loading LaMa model on {device} ({quality_preset} quality)...")
+        model_manager = load_lama_model(device)
+        emit_status("LaMa model loaded.")
 
     suffix = Path(input_path).suffix.lower()
     if suffix in VIDEO_EXTENSIONS:

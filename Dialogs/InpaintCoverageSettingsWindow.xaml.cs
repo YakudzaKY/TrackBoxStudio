@@ -141,6 +141,22 @@ public partial class InpaintCoverageSettingsWindow : Window, INotifyPropertyChan
         StatusText = "Default values restored in the form.";
     }
 
+    private void ResetEntryToDefault_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isBusy)
+        {
+            return;
+        }
+
+        if (sender is not FrameworkElement { DataContext: InpaintCoverageSettingEntry entry })
+        {
+            return;
+        }
+
+        entry.ResetToDefault();
+        StatusText = $"'{entry.DisplayName}' restored to default.";
+    }
+
     private async void Try_Click(object sender, RoutedEventArgs e)
     {
         if (_isBusy)

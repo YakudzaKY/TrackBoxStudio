@@ -56,6 +56,7 @@ dotnet run
 ## Notes
 
 - Registry entries are reusable across videos.
+- Inpaint tuning is user-local: `Data/lama-coverage-config.json` is auto-created on first launch and is not stored in git.
 - Track timelines can be saved and reopened as standalone project files.
 - If `ffmpeg.exe` is available in `PATH`, TrackBoxStudio will try to preserve audio when exporting video.
 - If `ffmpeg.exe` is not available, the processed video is still exported, but audio may be dropped.

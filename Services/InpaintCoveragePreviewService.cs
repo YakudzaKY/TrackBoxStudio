@@ -40,26 +40,27 @@ public sealed class InpaintCoveragePreviewService
             var inputVideoPath = Path.Combine(tempDirectory, "preview-input.mp4");
             var maskVideoPath = Path.Combine(tempDirectory, "preview-mask.mp4");
             var outputVideoPath = Path.Combine(tempDirectory, "preview-output.mp4");
+            var previewTracks = BuildPreviewTracks();
             BuildPreviewVideo(samples, inputVideoPath);
 
             status?.Report("Generating stable mask preview...");
             await _processingService.ProcessAsync(
                 inputVideoPath,
                 maskVideoPath,
-                BuildPreviewTracks(),
+                previewTracks,
                 progress: null,
-                status,
-                cancellationToken);
+                status: status,
+                cancellationToken: cancellationToken,
+                renderMaskOnly: true);
 
             status?.Report("Generating inpaint preview...");
             await _processingService.ProcessAsync(
                 inputVideoPath,
                 outputVideoPath,
-                BuildPreviewTracks(),
-                renderMaskOnly: false,
+                previewTracks,
                 progress: null,
-                status,
-                cancellationToken);
+                status: status,
+                cancellationToken: cancellationToken);
 
             var maskCropPaths = ExtractPreviewCrops(maskVideoPath, tempDirectory, "mask", samples.Count);
             var outputCropPaths = ExtractPreviewCrops(outputVideoPath, tempDirectory, "output", samples.Count);

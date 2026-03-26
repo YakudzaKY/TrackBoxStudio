@@ -1,3 +1,4 @@
+using System.Globalization;
 using TrackBoxStudio.Infrastructure;
 
 namespace TrackBoxStudio.Models;
@@ -36,9 +37,46 @@ public sealed class InpaintCoverageSettingEntry : BindableBase
 
     public string DefaultValueText { get; }
 
+    public bool CanResetToDefault => !RepresentsDefaultValue(_valueText);
+
     public string ValueText
     {
         get => _valueText;
-        set => SetProperty(ref _valueText, value);
+        set
+        {
+            if (!SetProperty(ref _valueText, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(CanResetToDefault));
+        }
+    }
+
+    public void ResetToDefault()
+    {
+        ValueText = DefaultValueText;
+    }
+
+    private bool RepresentsDefaultValue(string? rawValue)
+    {
+        var currentValue = (rawValue ?? string.Empty).Trim();
+        var defaultValue = DefaultValueText.Trim();
+
+        if (IsInteger &&
+            int.TryParse(currentValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var currentInt) &&
+            int.TryParse(defaultValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var defaultInt))
+        {
+            return currentInt == defaultInt;
+        }
+
+        if (!IsInteger &&
+            double.TryParse(currentValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var currentDouble) &&
+            double.TryParse(defaultValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var defaultDouble))
+        {
+            return Math.Abs(currentDouble - defaultDouble) < 0.000_001d;
+        }
+
+        return string.Equals(currentValue, defaultValue, StringComparison.Ordinal);
     }
 }
