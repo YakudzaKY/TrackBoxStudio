@@ -478,11 +478,11 @@ def apply_temporal_segment_blend(
             if use_left:
                 frame_index = left
                 left += 1
-                anchor = prev_anchor if prev_anchor is not None else next_anchor
+                anchor = prev_anchor
             else:
                 frame_index = right
                 right -= 1
-                anchor = next_anchor if next_anchor is not None else prev_anchor
+                anchor = next_anchor
 
             use_left = not use_left
             if anchor is None:
