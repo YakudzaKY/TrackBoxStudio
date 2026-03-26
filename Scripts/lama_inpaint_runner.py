@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,125 +14,92 @@ from iopaint.model_manager import ModelManager
 from iopaint.schema import HDStrategy, LDMSampler, InpaintRequest as Config
 
 
-# Coverage / mask tuning. Change values here without touching the pipeline below.
-COVERAGE_CONFIG = {
-    # Lower = white-ish watermark pixels start expanding earlier inside the box.
-    "white_expansion_threshold": 0.64,
-    # Larger = white expansion grows farther in pixels.
-    "white_expansion_radius": 10,
-    # Lower start / end = inpaint replaces darker fade pixels more aggressively.
-    "light_replace_start": 0.32,
-    "light_replace_end": 0.78,
-    # Minimum alpha once a pixel is treated as supported watermark coverage.
-    "light_replace_support_floor": 0.16,
-    # Extra alpha contributed by confidence-driven support.
-    "light_replace_confidence_support": 0.58,
-    # Feather on the final replacement mask edge.
-    "mask_edge_feather_sigma": 3.0,
-    # Watermark confidence inputs. More aggressive = easier fade capture.
-    "watermark_lift_sigma": 5.0,
-    "watermark_lift_scale": 0.10,
-    "watermark_edge_scale": 0.16,
-    "watermark_confidence_low": 0.16,
-    "watermark_confidence_high": 0.56,
-    "watermark_confidence_halo_support": 0.72,
-    # Hysteresis keeps weak pixels alive around stronger detections.
-    "watermark_hysteresis_radius": 2,
-    "watermark_hysteresis_iterations": 5,
-    # Temporal propagation. Higher decay / gains = longer fade-in / fade-out capture.
-    "watermark_temporal_support_decay": 0.985,
-    "watermark_temporal_support_floor": 0.15,
-    "watermark_previous_support_gain": 1.24,
-    "watermark_next_support_gain": 1.12,
-    # Segment backfill. Force a few frames before/after the first and last confident frame.
-    "segment_detect_trigger": 0.16,
-    "segment_backfill_before_frames": 3,
-    "segment_backfill_after_frames": 3,
-    "segment_backfill_floor": 0.22,
-    # Segment reference frame. Helps weak fade frames borrow a stronger mask.
-    "segment_reference_trigger": 0.22,
-    "segment_reference_gain": 1.28,
-    "segment_reference_floor": 0.20,
-    # Spatial growth around the confident core and halo.
-    "watermark_core_grow_radius": 2,
-    "watermark_halo_radius": 8,
+def resolve_coverage_config_path() -> Path:
+    override = os.environ.get("TRACKBOX_COVERAGE_CONFIG_PATH", "").strip()
+    if override:
+        return Path(override)
+
+    return Path(__file__).resolve().parent.parent / "Data" / "lama-coverage-config.json"
+
+
+def merge_coverage_config(defaults: dict[str, int | float]) -> dict[str, int | float]:
+    config_path = resolve_coverage_config_path()
+    merged = defaults.copy()
+    if not config_path.exists():
+        return merged
+
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return merged
+
+    if not isinstance(loaded, dict):
+        return merged
+
+    for key, default_value in defaults.items():
+        if key not in loaded:
+            continue
+
+        raw_value = loaded[key]
+        try:
+            if isinstance(default_value, int) and not isinstance(default_value, bool):
+                merged[key] = int(raw_value)
+            else:
+                merged[key] = float(raw_value)
+        except (TypeError, ValueError):
+            merged[key] = default_value
+
+    return merged
+
+
+DEFAULT_COVERAGE_CONFIG = {
+    # Lower = dimmer white-ish pixels start contributing to the stable mask.
+    "mask_min_whiteness": 0.56,
+    # Lower = darker but still bright watermark pixels are allowed into the stable mask.
+    "mask_min_luminance": 0.60,
+    # Lower = more frames are treated as outliers when the crop changes too much.
+    "stable_frame_delta_threshold": 0.12,
+    # If too few frames survive the delta filter, keep at least this fraction of the calmest ones.
+    "stable_frame_keep_ratio": 0.45,
+    # Lower = a pixel only needs to appear in fewer stable frames to enter the final mask.
+    "stable_mask_presence_ratio": 0.35,
+    # Morphological close to connect tiny gaps inside the stable mask.
+    "mask_close_radius": 2,
+    # Expand the final stable mask by this many pixels before inpaint.
+    "mask_expand_radius": 6,
+    # Remove very tiny islands before and after expansion.
+    "mask_min_component_area": 24,
 }
 
-WHITE_EXPANSION_THRESHOLD = COVERAGE_CONFIG["white_expansion_threshold"]
-WHITE_EXPANSION_RADIUS = COVERAGE_CONFIG["white_expansion_radius"]
-LIGHT_REPLACE_START = COVERAGE_CONFIG["light_replace_start"]
-LIGHT_REPLACE_END = COVERAGE_CONFIG["light_replace_end"]
-LIGHT_REPLACE_SUPPORT_FLOOR = COVERAGE_CONFIG["light_replace_support_floor"]
-LIGHT_REPLACE_CONFIDENCE_SUPPORT = COVERAGE_CONFIG["light_replace_confidence_support"]
-MASK_EDGE_FEATHER_SIGMA = COVERAGE_CONFIG["mask_edge_feather_sigma"]
-WATERMARK_LIFT_SIGMA = COVERAGE_CONFIG["watermark_lift_sigma"]
-WATERMARK_LIFT_SCALE = COVERAGE_CONFIG["watermark_lift_scale"]
-WATERMARK_EDGE_SCALE = COVERAGE_CONFIG["watermark_edge_scale"]
-WATERMARK_CONFIDENCE_LOW = COVERAGE_CONFIG["watermark_confidence_low"]
-WATERMARK_CONFIDENCE_HIGH = COVERAGE_CONFIG["watermark_confidence_high"]
-WATERMARK_CONFIDENCE_HALO_SUPPORT = COVERAGE_CONFIG["watermark_confidence_halo_support"]
-WATERMARK_HYSTERESIS_RADIUS = COVERAGE_CONFIG["watermark_hysteresis_radius"]
-WATERMARK_HYSTERESIS_ITERATIONS = COVERAGE_CONFIG["watermark_hysteresis_iterations"]
-WATERMARK_TEMPORAL_SUPPORT_DECAY = COVERAGE_CONFIG["watermark_temporal_support_decay"]
-WATERMARK_TEMPORAL_SUPPORT_FLOOR = COVERAGE_CONFIG["watermark_temporal_support_floor"]
-WATERMARK_PREVIOUS_SUPPORT_GAIN = COVERAGE_CONFIG["watermark_previous_support_gain"]
-WATERMARK_NEXT_SUPPORT_GAIN = COVERAGE_CONFIG["watermark_next_support_gain"]
-SEGMENT_DETECT_TRIGGER = COVERAGE_CONFIG["segment_detect_trigger"]
-SEGMENT_BACKFILL_BEFORE_FRAMES = COVERAGE_CONFIG["segment_backfill_before_frames"]
-SEGMENT_BACKFILL_AFTER_FRAMES = COVERAGE_CONFIG["segment_backfill_after_frames"]
-SEGMENT_BACKFILL_FLOOR = COVERAGE_CONFIG["segment_backfill_floor"]
-SEGMENT_REFERENCE_TRIGGER = COVERAGE_CONFIG["segment_reference_trigger"]
-SEGMENT_REFERENCE_GAIN = COVERAGE_CONFIG["segment_reference_gain"]
-SEGMENT_REFERENCE_FLOOR = COVERAGE_CONFIG["segment_reference_floor"]
-WATERMARK_CORE_GROW_RADIUS = COVERAGE_CONFIG["watermark_core_grow_radius"]
-WATERMARK_HALO_RADIUS = COVERAGE_CONFIG["watermark_halo_radius"]
-TEMPORAL_FLOW_MAX_DIMENSION = 960
-TEMPORAL_FLOW_FB_MAX_ERROR = 1.5
-TEMPORAL_MIN_BLEND_RATIO = 0.05
-TEMPORAL_MIN_BLEND_PIXELS = 256
-TEMPORAL_RELIABLE_ERODE_RADIUS = 1
-TEMPORAL_NEIGHBOR_BLEND_MAX = 0.35
-TEMPORAL_BLEND_SIGMA = 3.0
-TEMPORAL_SIMILARITY_THRESHOLD = 0.18
+COVERAGE_CONFIG = merge_coverage_config(DEFAULT_COVERAGE_CONFIG)
+
+MASK_MIN_WHITENESS = COVERAGE_CONFIG["mask_min_whiteness"]
+MASK_MIN_LUMINANCE = COVERAGE_CONFIG["mask_min_luminance"]
+STABLE_FRAME_DELTA_THRESHOLD = COVERAGE_CONFIG["stable_frame_delta_threshold"]
+STABLE_FRAME_KEEP_RATIO = COVERAGE_CONFIG["stable_frame_keep_ratio"]
+STABLE_MASK_PRESENCE_RATIO = COVERAGE_CONFIG["stable_mask_presence_ratio"]
+MASK_CLOSE_RADIUS = COVERAGE_CONFIG["mask_close_radius"]
+MASK_EXPAND_RADIUS = COVERAGE_CONFIG["mask_expand_radius"]
+MASK_MIN_COMPONENT_AREA = COVERAGE_CONFIG["mask_min_component_area"]
+
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
 
 
 @dataclass
-class TrackRuntime:
-    keyframes: list
-    cursor: int = 0
-    active: dict | None = None
+class BoxSegment:
+    track_id: str
+    start_frame: int
+    end_frame: int
+    rect: tuple[int, int, int, int]
 
 
 @dataclass
-class SourceFrameBundle:
-    source_frame: np.ndarray
-    base_mask: np.ndarray
-    watermark_confidence: np.ndarray
-
-
-@dataclass
-class ProcessedFrameBundle:
-    source_frame: np.ndarray
-    processed_frame: np.ndarray
-    mask: np.ndarray
-    watermark_confidence: np.ndarray
-
-
-@dataclass
-class SegmentCoveragePlan:
-    span_start: int
-    span_end: int
-    detected_start: int
-    detected_end: int
-    coverage_start: int
-    coverage_end: int
-    reference_index: int
-
-
-@dataclass
-class TemporalNeighborGuidance:
-    warped_processed_frame: np.ndarray
-    confidence_map: np.ndarray
+class SegmentMaskPlan:
+    start_frame: int
+    end_frame: int
+    rect: tuple[int, int, int, int]
+    local_mask: np.ndarray
 
 
 def emit_status(message: str) -> None:
@@ -183,21 +149,6 @@ def resolve_device(preference: str) -> str:
     raise RuntimeError(f"Unsupported device preference: {preference}")
 
 
-def create_runtime_tracks(track_documents: list[dict]) -> list[TrackRuntime]:
-    runtimes: list[TrackRuntime] = []
-    for track in track_documents:
-        ordered = sorted(track.get("keyframes", []), key=lambda item: item.get("frame", 0))
-        runtimes.append(TrackRuntime(keyframes=ordered))
-    return runtimes
-
-
-def advance_runtime(runtime: TrackRuntime, frame_index: int) -> dict | None:
-    while runtime.cursor < len(runtime.keyframes) and runtime.keyframes[runtime.cursor].get("frame", 0) <= frame_index:
-        runtime.active = runtime.keyframes[runtime.cursor]
-        runtime.cursor += 1
-    return runtime.active
-
-
 def normalize_rect(box: dict, width: int, height: int) -> tuple[int, int, int, int]:
     x = max(0, min(int(box.get("x", 0)), max(0, width - 1)))
     y = max(0, min(int(box.get("y", 0)), max(0, height - 1)))
@@ -206,32 +157,79 @@ def normalize_rect(box: dict, width: int, height: int) -> tuple[int, int, int, i
     return x, y, w, h
 
 
-def build_mask(frame_shape: tuple[int, int, int], frame_index: int, runtimes: list[TrackRuntime], mask_padding: int) -> np.ndarray:
-    height, width = frame_shape[:2]
-    mask = np.zeros((height, width), dtype=np.uint8)
+def expand_rect(rect: tuple[int, int, int, int], padding: int, width: int, height: int) -> tuple[int, int, int, int]:
+    x, y, w, h = rect
+    if padding <= 0:
+        return x, y, w, h
 
-    for runtime in runtimes:
-        active = advance_runtime(runtime, frame_index)
-        if not active or not active.get("enabled") or not active.get("box"):
+    left = max(0, x - padding)
+    top = max(0, y - padding)
+    right = min(width, x + w + padding)
+    bottom = min(height, y + h + padding)
+    return left, top, max(0, right - left), max(0, bottom - top)
+
+
+def merge_adjacent_segments(segments: list[BoxSegment]) -> list[BoxSegment]:
+    if not segments:
+        return []
+
+    ordered = sorted(segments, key=lambda segment: (segment.track_id, segment.start_frame, segment.rect))
+    merged = [ordered[0]]
+
+    for segment in ordered[1:]:
+        previous = merged[-1]
+        if (
+            previous.track_id == segment.track_id
+            and previous.rect == segment.rect
+            and segment.start_frame <= previous.end_frame + 1
+        ):
+            previous.end_frame = max(previous.end_frame, segment.end_frame)
             continue
 
-        x, y, w, h = normalize_rect(active["box"], width, height)
-        if w <= 0 or h <= 0:
-            continue
+        merged.append(segment)
 
-        if mask_padding > 0:
-            x = max(0, x - mask_padding)
-            y = max(0, y - mask_padding)
-            w = min(width - x, w + mask_padding * 2)
-            h = min(height - y, h + mask_padding * 2)
+    return merged
 
-        cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
 
-    return mask
+def extract_box_segments(
+    tracks: list[dict],
+    frame_count: int,
+    width: int,
+    height: int,
+    mask_padding: int,
+) -> list[BoxSegment]:
+    segments: list[BoxSegment] = []
+
+    for track in tracks:
+        ordered_keyframes = sorted(track.get("keyframes", []), key=lambda item: item.get("frame", 0))
+        for index, keyframe in enumerate(ordered_keyframes):
+            if not keyframe.get("enabled") or not keyframe.get("box"):
+                continue
+
+            start_frame = max(0, min(int(keyframe.get("frame", 0)), max(0, frame_count - 1)))
+            next_frame = frame_count
+            if index < len(ordered_keyframes) - 1:
+                next_frame = max(0, min(int(ordered_keyframes[index + 1].get("frame", frame_count)), frame_count))
+
+            end_frame = min(frame_count - 1, max(start_frame, next_frame - 1))
+            rect = normalize_rect(keyframe["box"], width, height)
+            rect = expand_rect(rect, mask_padding, width, height)
+            if rect[2] <= 0 or rect[3] <= 0:
+                continue
+
+            segments.append(
+                BoxSegment(
+                    track_id=str(track.get("id", "")),
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    rect=rect,
+                )
+            )
+
+    return merge_adjacent_segments(segments)
 
 
 def process_image_with_lama(image_bgr: np.ndarray, mask: np.ndarray, model_manager: ModelManager, job: dict) -> np.ndarray:
-    # IOPaint expects RGB input and returns a BGR image.
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     config = Config(
         ldm_steps=max(1, int(job.get("ldmSteps", 100))),
@@ -242,7 +240,7 @@ def process_image_with_lama(image_bgr: np.ndarray, mask: np.ndarray, model_manag
         hd_strategy_resize_limit=max(256, int(job.get("resizeLimit", 2048))),
     )
     result = model_manager(image_rgb, mask, config)
-    if result.dtype in [np.float64, np.float32]:
+    if result.dtype in {np.float64, np.float32}:
         result = np.clip(result, 0, 255).astype(np.uint8)
     return result
 
@@ -250,780 +248,150 @@ def process_image_with_lama(image_bgr: np.ndarray, mask: np.ndarray, model_manag
 def compute_whiteness_map(frame_bgr: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
-
     lightness = lab[..., 0] / 255.0
     value = hsv[..., 2] / 255.0
     saturation = hsv[..., 1] / 255.0
     whiteness = (0.65 * lightness + 0.35 * value) * (1.0 - saturation)
+    whiteness = cv2.GaussianBlur(whiteness, (0, 0), sigmaX=1.0, sigmaY=1.0)
     return np.clip(whiteness, 0.0, 1.0)
 
 
-def compute_watermark_lift_map(frame_bgr: np.ndarray) -> np.ndarray:
-    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
-    value = hsv[..., 2] / 255.0
-    local_value = cv2.GaussianBlur(value, (0, 0), sigmaX=WATERMARK_LIFT_SIGMA, sigmaY=WATERMARK_LIFT_SIGMA)
-    lift = np.clip((value - local_value + 0.02) / WATERMARK_LIFT_SCALE, 0.0, 1.0)
-    return lift
+def compute_luminance_map(frame_bgr: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    luminance = lab[..., 0] / 255.0
+    luminance = cv2.GaussianBlur(luminance, (0, 0), sigmaX=1.0, sigmaY=1.0)
+    return np.clip(luminance, 0.0, 1.0)
 
 
-def compute_local_flatness_map(frame_bgr: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    gradient = cv2.magnitude(grad_x, grad_y)
-    flatness = 1.0 - np.clip(gradient / WATERMARK_EDGE_SCALE, 0.0, 1.0)
-    return cv2.GaussianBlur(flatness, (0, 0), sigmaX=1.2, sigmaY=1.2)
+def build_candidate_mask(crop_bgr: np.ndarray) -> np.ndarray:
+    whiteness = compute_whiteness_map(crop_bgr)
+    luminance = compute_luminance_map(crop_bgr)
+    candidate = (whiteness >= MASK_MIN_WHITENESS) & (luminance >= MASK_MIN_LUMINANCE)
+    return np.where(candidate, 255, 0).astype(np.uint8)
 
 
-def build_watermark_confidence_map(frame_bgr: np.ndarray, base_mask: np.ndarray) -> np.ndarray:
-    if cv2.countNonZero(base_mask) == 0:
-        return np.zeros(base_mask.shape, dtype=np.float32)
+def remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
+    if min_area <= 1 or cv2.countNonZero(mask) == 0:
+        return mask
 
-    whiteness = compute_whiteness_map(frame_bgr)
-    lift = compute_watermark_lift_map(frame_bgr)
-    flatness = compute_local_flatness_map(frame_bgr)
-    confidence = 0.58 * whiteness + 0.27 * lift + 0.15 * flatness
-    confidence = cv2.GaussianBlur(confidence.astype(np.float32), (0, 0), sigmaX=1.0, sigmaY=1.0)
-    halo_support = cv2.GaussianBlur(confidence, (0, 0), sigmaX=2.2, sigmaY=2.2) * WATERMARK_CONFIDENCE_HALO_SUPPORT
-    confidence = np.maximum(confidence, halo_support)
-    confidence = np.clip(confidence, 0.0, 1.0)
-    confidence[base_mask == 0] = 0.0
-    return confidence
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    filtered = np.zeros_like(mask)
+    for component_index in range(1, component_count):
+        if stats[component_index, cv2.CC_STAT_AREA] >= min_area:
+            filtered[labels == component_index] = 255
+    return filtered
 
 
-def build_adaptive_inpaint_mask(frame_bgr: np.ndarray, base_mask: np.ndarray) -> np.ndarray:
-    adaptive_mask = base_mask.copy()
-    whiteness = compute_whiteness_map(frame_bgr)
-    white_core = np.where((adaptive_mask > 0) & (whiteness >= WHITE_EXPANSION_THRESHOLD), 255, 0).astype(np.uint8)
-
-    if cv2.countNonZero(white_core) == 0:
-        return adaptive_mask
-
-    kernel_size = WHITE_EXPANSION_RADIUS * 2 + 1
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    expanded_white = cv2.dilate(white_core, kernel, iterations=1)
-    return cv2.bitwise_or(adaptive_mask, expanded_white)
-
-
-def composite_masked_result(
-    base_frame: np.ndarray,
-    processed_frame: np.ndarray,
-    mask: np.ndarray,
-    alpha_reference_frame: np.ndarray | None = None,
-    alpha_confidence_map: np.ndarray | None = None,
-) -> np.ndarray:
-    alpha_source = base_frame if alpha_reference_frame is None else alpha_reference_frame
-    alpha_map = build_light_replacement_alpha(alpha_source, mask, alpha_confidence_map)
-    alpha_map = alpha_map[..., None]
-    source_float = base_frame.astype(np.float32)
-    processed_float = processed_frame.astype(np.float32)
-    composited = source_float * (1.0 - alpha_map) + processed_float * alpha_map
-    return np.clip(composited, 0, 255).astype(np.uint8)
-
-
-def build_soft_mask(mask: np.ndarray, sigma: float) -> np.ndarray:
-    mask_float = mask.astype(np.float32) / 255.0
-    if sigma <= 0:
-        return mask_float
-
-    softened = cv2.GaussianBlur(mask_float, (0, 0), sigmaX=sigma, sigmaY=sigma)
-    return np.clip(softened, 0.0, 1.0)
-
-
-def build_light_replacement_alpha(
-    source_frame: np.ndarray,
-    mask: np.ndarray,
-    watermark_confidence: np.ndarray | None = None,
-) -> np.ndarray:
-    if cv2.countNonZero(mask) == 0:
-        return np.zeros(mask.shape, dtype=np.float32)
-
-    whiteness = compute_whiteness_map(source_frame)
-    feather = build_soft_mask(mask, MASK_EDGE_FEATHER_SIGMA)
-    light_weight = np.clip(
-        (whiteness - LIGHT_REPLACE_START) / max(0.001, LIGHT_REPLACE_END - LIGHT_REPLACE_START),
-        0.0,
-        1.0,
-    )
-    # Smoothstep keeps the transition soft so mid-tones do not snap.
-    light_weight = light_weight * light_weight * (3.0 - 2.0 * light_weight)
-    alpha = feather * light_weight
-    if watermark_confidence is not None:
-        confidence_weight = np.clip(watermark_confidence.astype(np.float32), 0.0, 1.0)
-        support_floor = np.where(confidence_weight >= WATERMARK_CONFIDENCE_LOW, LIGHT_REPLACE_SUPPORT_FLOOR, 0.0)
-        confidence_weight = confidence_weight * confidence_weight * (3.0 - 2.0 * confidence_weight)
-        alpha = np.maximum(alpha, feather * support_floor)
-        alpha = np.maximum(alpha, feather * confidence_weight * LIGHT_REPLACE_CONFIDENCE_SUPPORT)
-    alpha[mask == 0] = 0.0
-    return alpha
-
-
-def get_flow_working_size(width: int, height: int) -> tuple[int, int, float]:
-    longest_side = max(width, height)
-    if longest_side <= TEMPORAL_FLOW_MAX_DIMENSION:
-        return width, height, 1.0
-
-    scale = TEMPORAL_FLOW_MAX_DIMENSION / longest_side
-    scaled_width = max(32, int(round(width * scale)))
-    scaled_height = max(32, int(round(height * scale)))
-    return scaled_width, scaled_height, scale
-
-
-def resize_flow_to_frame(flow: np.ndarray, width: int, height: int, scale: float) -> np.ndarray:
-    if scale >= 1.0 and flow.shape[1] == width and flow.shape[0] == height:
-        return flow.astype(np.float32, copy=False)
-
-    resized = cv2.resize(flow, (width, height), interpolation=cv2.INTER_LINEAR)
-    resized = resized.astype(np.float32, copy=False)
-    resized[..., 0] /= scale
-    resized[..., 1] /= scale
-    return resized
-
-
-def build_flow_maps(flow: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    height, width = flow.shape[:2]
-    grid_x, grid_y = np.meshgrid(
-        np.arange(width, dtype=np.float32),
-        np.arange(height, dtype=np.float32),
-    )
-    return grid_x + flow[..., 0], grid_y + flow[..., 1]
-
-
-def calculate_bidirectional_flow(previous_frame: np.ndarray, current_frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    height, width = current_frame.shape[:2]
-    scaled_width, scaled_height, scale = get_flow_working_size(width, height)
-
-    previous_gray = cv2.cvtColor(previous_frame, cv2.COLOR_BGR2GRAY)
-    current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-    if scale < 1.0:
-        previous_gray = cv2.resize(previous_gray, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
-        current_gray = cv2.resize(current_gray, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
-
-    flow_settings = dict(
-        pyr_scale=0.5,
-        levels=4,
-        winsize=21,
-        iterations=5,
-        poly_n=7,
-        poly_sigma=1.5,
-        flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN,
-    )
-    backward_flow_small = cv2.calcOpticalFlowFarneback(current_gray, previous_gray, None, **flow_settings)
-    forward_flow_small = cv2.calcOpticalFlowFarneback(previous_gray, current_gray, None, **flow_settings)
-
-    backward_flow = resize_flow_to_frame(backward_flow_small, width, height, scale)
-    forward_flow = resize_flow_to_frame(forward_flow_small, width, height, scale)
-    return backward_flow, forward_flow
-
-
-def remap_with_flow(
-    image: np.ndarray,
-    flow: np.ndarray,
-    interpolation: int,
-    border_mode: int,
-    border_value: int | tuple[int, int, int] = 0,
-) -> np.ndarray:
-    map_x, map_y = build_flow_maps(flow)
-    return cv2.remap(image, map_x, map_y, interpolation=interpolation, borderMode=border_mode, borderValue=border_value)
-
-
-def build_flow_confidence_mask(backward_flow: np.ndarray, forward_flow: np.ndarray) -> np.ndarray:
-    map_x, map_y = build_flow_maps(backward_flow)
-    sampled_forward = cv2.remap(
-        forward_flow,
-        map_x,
-        map_y,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-
-    height, width = backward_flow.shape[:2]
-    inside = (map_x >= 0.0) & (map_x <= width - 1.0) & (map_y >= 0.0) & (map_y <= height - 1.0)
-    fb_error = np.linalg.norm(sampled_forward + backward_flow, axis=2)
-    return np.where(inside & (fb_error <= TEMPORAL_FLOW_FB_MAX_ERROR), 255, 0).astype(np.uint8)
-
-
-def build_neighbor_confidence_support(
-    current_bundle: SourceFrameBundle,
-    neighbor_bundle: SourceFrameBundle | None,
-) -> np.ndarray | None:
-    if neighbor_bundle is None:
-        return None
-
-    if cv2.countNonZero(current_bundle.base_mask) == 0 or cv2.countNonZero(neighbor_bundle.base_mask) == 0:
-        return None
-
-    backward_flow, forward_flow = calculate_bidirectional_flow(
-        neighbor_bundle.source_frame,
-        current_bundle.source_frame,
-    )
-    warped_neighbor_mask = remap_with_flow(
-        neighbor_bundle.base_mask,
-        backward_flow,
-        interpolation=cv2.INTER_NEAREST,
-        border_mode=cv2.BORDER_CONSTANT,
-        border_value=0,
-    )
-    overlap_mask = cv2.bitwise_and(current_bundle.base_mask, warped_neighbor_mask)
-    if cv2.countNonZero(overlap_mask) == 0:
-        return None
-
-    flow_confidence = build_flow_confidence_mask(backward_flow, forward_flow)
-    reliable_mask = cv2.bitwise_and(overlap_mask, flow_confidence)
-    if TEMPORAL_RELIABLE_ERODE_RADIUS > 0 and cv2.countNonZero(reliable_mask) > 0:
-        kernel_size = TEMPORAL_RELIABLE_ERODE_RADIUS * 2 + 1
-        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        reliable_mask = cv2.erode(reliable_mask, kernel, iterations=1)
-
-    if cv2.countNonZero(reliable_mask) == 0:
-        return None
-
-    warped_confidence = remap_with_flow(
-        neighbor_bundle.watermark_confidence.astype(np.float32),
-        backward_flow,
-        interpolation=cv2.INTER_LINEAR,
-        border_mode=cv2.BORDER_CONSTANT,
-        border_value=0,
-    )
-    warped_confidence[reliable_mask == 0] = 0.0
-    return np.clip(warped_confidence * WATERMARK_TEMPORAL_SUPPORT_DECAY, 0.0, 1.0)
-
-
-def build_hysteresis_mask(confidence_map: np.ndarray) -> np.ndarray:
-    core_mask = np.where(confidence_map >= WATERMARK_CONFIDENCE_HIGH, 255, 0).astype(np.uint8)
-    support_mask = np.where(confidence_map >= WATERMARK_CONFIDENCE_LOW, 255, 0).astype(np.uint8)
-    if cv2.countNonZero(core_mask) == 0:
-        return support_mask
-    if cv2.countNonZero(support_mask) == 0:
-        return core_mask
-
-    kernel_size = WATERMARK_HYSTERESIS_RADIUS * 2 + 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-    grown_mask = core_mask.copy()
-    for _ in range(max(1, WATERMARK_HYSTERESIS_ITERATIONS)):
-        expanded_mask = cv2.dilate(grown_mask, kernel, iterations=1)
-        expanded_mask = cv2.bitwise_and(expanded_mask, support_mask)
-        if np.array_equal(expanded_mask, grown_mask):
-            break
-        grown_mask = expanded_mask
-
-    return cv2.bitwise_or(core_mask, grown_mask)
-
-
-def build_two_pass_inpaint_masks(
-    frame_bgr: np.ndarray,
-    base_mask: np.ndarray,
-    watermark_confidence: np.ndarray,
-    hysteresis_mask: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    if cv2.countNonZero(base_mask) == 0:
-        empty_mask = np.zeros(base_mask.shape, dtype=np.uint8)
-        return empty_mask, empty_mask
-
-    core_mask = np.where(watermark_confidence >= WATERMARK_CONFIDENCE_HIGH, 255, 0).astype(np.uint8)
-    if cv2.countNonZero(core_mask) == 0:
-        core_mask = np.where(watermark_confidence >= 0.5 * (WATERMARK_CONFIDENCE_LOW + WATERMARK_CONFIDENCE_HIGH), 255, 0).astype(np.uint8)
-
-    support_mask = hysteresis_mask.copy()
-    if cv2.countNonZero(support_mask) == 0:
-        support_mask = np.where(watermark_confidence >= WATERMARK_CONFIDENCE_LOW, 255, 0).astype(np.uint8)
-
-    if cv2.countNonZero(support_mask) == 0:
-        fallback_mask = build_adaptive_inpaint_mask(frame_bgr, base_mask)
-        return fallback_mask, fallback_mask
-
-    if WATERMARK_CORE_GROW_RADIUS > 0 and cv2.countNonZero(core_mask) > 0:
-        kernel_size = WATERMARK_CORE_GROW_RADIUS * 2 + 1
+def refine_local_mask(mask: np.ndarray) -> np.ndarray:
+    refined = remove_small_components(mask.astype(np.uint8, copy=False), MASK_MIN_COMPONENT_AREA)
+    if MASK_CLOSE_RADIUS > 0 and cv2.countNonZero(refined) > 0:
+        kernel_size = MASK_CLOSE_RADIUS * 2 + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        core_mask = cv2.dilate(core_mask, kernel, iterations=1)
-
-    core_mask = build_adaptive_inpaint_mask(frame_bgr, core_mask) if cv2.countNonZero(core_mask) > 0 else core_mask
-    if cv2.countNonZero(core_mask) == 0:
-        core_mask = support_mask.copy()
-
-    full_mask = cv2.bitwise_or(support_mask, core_mask)
-    if WATERMARK_HALO_RADIUS > 0 and cv2.countNonZero(full_mask) > 0:
-        kernel_size = WATERMARK_HALO_RADIUS * 2 + 1
+        refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, kernel)
+    refined = remove_small_components(refined, MASK_MIN_COMPONENT_AREA)
+    if MASK_EXPAND_RADIUS > 0 and cv2.countNonZero(refined) > 0:
+        kernel_size = MASK_EXPAND_RADIUS * 2 + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        full_mask = cv2.dilate(full_mask, kernel, iterations=1)
-
-    full_mask = build_adaptive_inpaint_mask(frame_bgr, full_mask)
-    return core_mask, full_mask
+        refined = cv2.dilate(refined, kernel, iterations=1)
+    return remove_small_components(refined, MASK_MIN_COMPONENT_AREA)
 
 
-def run_two_pass_inpaint(
-    frame_bgr: np.ndarray,
-    core_mask: np.ndarray,
-    full_mask: np.ndarray,
-    model_manager: ModelManager,
-    job: dict,
-) -> np.ndarray:
-    working_frame = frame_bgr.copy()
-    core_area = cv2.countNonZero(core_mask)
-    full_area = cv2.countNonZero(full_mask)
-
-    if core_area > 0:
-        working_frame = process_image_with_lama(working_frame, core_mask, model_manager, job)
-
-    if full_area > 0:
-        masks_are_identical = core_area == full_area and cv2.countNonZero(cv2.absdiff(core_mask, full_mask)) == 0
-        if core_area == 0 or not masks_are_identical:
-            working_frame = process_image_with_lama(working_frame, full_mask, model_manager, job)
-
-    return working_frame
-
-
-def build_neighbor_guidance(
-    current_bundle: ProcessedFrameBundle,
-    neighbor_bundle: ProcessedFrameBundle | None,
-) -> TemporalNeighborGuidance | None:
-    if neighbor_bundle is None:
-        return None
-
-    if cv2.countNonZero(current_bundle.mask) == 0 or cv2.countNonZero(neighbor_bundle.mask) == 0:
-        return None
-
-    backward_flow, forward_flow = calculate_bidirectional_flow(
-        neighbor_bundle.source_frame,
-        current_bundle.source_frame,
-    )
-    warped_neighbor_mask = remap_with_flow(
-        neighbor_bundle.mask,
-        backward_flow,
-        interpolation=cv2.INTER_NEAREST,
-        border_mode=cv2.BORDER_CONSTANT,
-        border_value=0,
-    )
-    overlap_mask = cv2.bitwise_and(current_bundle.mask, warped_neighbor_mask)
-    if cv2.countNonZero(overlap_mask) == 0:
-        return None
-
-    flow_confidence = build_flow_confidence_mask(backward_flow, forward_flow)
-    reliable_mask = cv2.bitwise_and(overlap_mask, flow_confidence)
-    if TEMPORAL_RELIABLE_ERODE_RADIUS > 0 and cv2.countNonZero(reliable_mask) > 0:
-        kernel_size = TEMPORAL_RELIABLE_ERODE_RADIUS * 2 + 1
-        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        reliable_mask = cv2.erode(reliable_mask, kernel, iterations=1)
-
-    current_area = cv2.countNonZero(current_bundle.mask)
-    reliable_area = cv2.countNonZero(reliable_mask)
-    if current_area == 0 or reliable_area < TEMPORAL_MIN_BLEND_PIXELS:
-        return None
-
-    if reliable_area / current_area < TEMPORAL_MIN_BLEND_RATIO:
-        return None
-
-    warped_neighbor_source = remap_with_flow(
-        neighbor_bundle.source_frame,
-        backward_flow,
-        interpolation=cv2.INTER_LINEAR,
-        border_mode=cv2.BORDER_REFLECT101,
-    )
-    warped_neighbor_processed = remap_with_flow(
-        neighbor_bundle.processed_frame,
-        backward_flow,
-        interpolation=cv2.INTER_LINEAR,
-        border_mode=cv2.BORDER_REFLECT101,
-    )
-
-    source_difference = cv2.absdiff(current_bundle.source_frame, warped_neighbor_source).astype(np.float32)
-    source_difference = np.mean(source_difference, axis=2) / 255.0
-    similarity = np.clip(1.0 - (source_difference / TEMPORAL_SIMILARITY_THRESHOLD), 0.0, 1.0)
-
-    confidence_map = build_soft_mask(reliable_mask, TEMPORAL_BLEND_SIGMA)
-    confidence_map *= similarity
-    confidence_map *= TEMPORAL_NEIGHBOR_BLEND_MAX
-    confidence_map[current_bundle.mask == 0] = 0.0
-
-    if float(np.max(confidence_map)) <= 0.01:
-        return None
-
-    return TemporalNeighborGuidance(
-        warped_processed_frame=warped_neighbor_processed,
-        confidence_map=confidence_map,
-    )
-
-
-def blend_frames(base_frame: np.ndarray, overlay_frame: np.ndarray, alpha_map: np.ndarray) -> np.ndarray:
-    if alpha_map.ndim == 2:
-        alpha_map = alpha_map[..., None]
-
-    base_float = base_frame.astype(np.float32)
-    overlay_float = overlay_frame.astype(np.float32)
-    blended = base_float * (1.0 - alpha_map) + overlay_float * alpha_map
-    return np.clip(blended, 0, 255).astype(np.uint8)
-
-
-def temporally_stabilize_bundle(
-    current_bundle: ProcessedFrameBundle,
-    previous_bundle: ProcessedFrameBundle | None,
-    next_bundle: ProcessedFrameBundle | None,
-) -> ProcessedFrameBundle:
-    if cv2.countNonZero(current_bundle.mask) == 0:
-        return current_bundle
-
-    blended_frame = current_bundle.processed_frame.copy()
-    accumulated = current_bundle.processed_frame.astype(np.float32)
-    total_weight = np.ones(current_bundle.mask.shape, dtype=np.float32)
-
-    for neighbor_bundle in (previous_bundle, next_bundle):
-        guidance = build_neighbor_guidance(current_bundle, neighbor_bundle)
-        if guidance is None:
-            continue
-
-        accumulated += guidance.warped_processed_frame.astype(np.float32) * guidance.confidence_map[..., None]
-        total_weight += guidance.confidence_map
-
-    blended_frame = np.clip(accumulated / total_weight[..., None], 0, 255).astype(np.uint8)
-    blended_frame = composite_masked_result(
-        current_bundle.processed_frame,
-        blended_frame,
-        current_bundle.mask,
-        alpha_reference_frame=current_bundle.source_frame,
-        alpha_confidence_map=current_bundle.watermark_confidence,
-    )
-    return ProcessedFrameBundle(
-        source_frame=current_bundle.source_frame,
-        processed_frame=blended_frame,
-        mask=current_bundle.mask,
-        watermark_confidence=current_bundle.watermark_confidence,
-    )
-
-
-def build_source_frame_bundle(
-    frame: np.ndarray,
-    frame_index: int,
-    runtimes: list[TrackRuntime],
-    mask_padding: int,
-) -> SourceFrameBundle:
-    base_mask = build_mask(frame.shape, frame_index, runtimes, mask_padding)
-    watermark_confidence = build_watermark_confidence_map(frame, base_mask)
-    return SourceFrameBundle(
-        source_frame=frame.copy(),
-        base_mask=base_mask,
-        watermark_confidence=watermark_confidence,
-    )
-
-
-def get_temp_array_path(directory: str, frame_index: int) -> str:
-    return os.path.join(directory, f"{frame_index:06d}.npy")
+def temp_array_path(directory: str, frame_index: int) -> str:
+    return os.path.join(directory, f"{frame_index:08d}.npy")
 
 
 def save_temp_array(directory: str, frame_index: int, array: np.ndarray) -> None:
-    np.save(get_temp_array_path(directory, frame_index), array)
+    np.save(temp_array_path(directory, frame_index), array, allow_pickle=False)
 
 
 def load_temp_array(directory: str, frame_index: int) -> np.ndarray:
-    return np.load(get_temp_array_path(directory, frame_index), allow_pickle=False)
+    return np.load(temp_array_path(directory, frame_index), allow_pickle=False)
 
 
-def save_source_frame_bundle(
-    bundle: SourceFrameBundle,
-    frame_index: int,
-    source_directory: str,
-    mask_directory: str,
-    confidence_directory: str,
-) -> None:
-    save_temp_array(source_directory, frame_index, bundle.source_frame)
-    save_temp_array(mask_directory, frame_index, bundle.base_mask)
-    save_temp_array(confidence_directory, frame_index, bundle.watermark_confidence.astype(np.float32))
+def build_segment_stable_local_mask(segment: BoxSegment, source_directory: str) -> np.ndarray:
+    x, y, w, h = segment.rect
+    candidate_masks: list[np.ndarray] = []
+    luminance_crops: list[np.ndarray] = []
 
-
-def load_source_frame_bundle(
-    frame_index: int,
-    source_directory: str,
-    mask_directory: str,
-    confidence_directory: str,
-) -> SourceFrameBundle:
-    return SourceFrameBundle(
-        source_frame=load_temp_array(source_directory, frame_index),
-        base_mask=load_temp_array(mask_directory, frame_index).astype(np.uint8, copy=False),
-        watermark_confidence=load_temp_array(confidence_directory, frame_index).astype(np.float32, copy=False),
-    )
-
-
-def merge_confidence_with_neighbor(
-    current_bundle: SourceFrameBundle,
-    effective_confidence: np.ndarray,
-    neighbor_bundle: SourceFrameBundle | None,
-    gain: float,
-) -> np.ndarray:
-    if neighbor_bundle is None:
-        return effective_confidence
-
-    neighbor_support = build_neighbor_confidence_support(current_bundle, neighbor_bundle)
-    if neighbor_support is None:
-        return effective_confidence
-
-    propagated_support = np.clip(neighbor_support * gain, 0.0, 1.0)
-    propagated_floor = np.where(
-        propagated_support >= WATERMARK_CONFIDENCE_LOW * 0.75,
-        WATERMARK_TEMPORAL_SUPPORT_FLOOR,
-        0.0,
-    )
-    merged_confidence = np.maximum(
-        effective_confidence,
-        propagated_support,
-    )
-    merged_confidence = np.maximum(merged_confidence, propagated_floor)
-    merged_confidence[current_bundle.base_mask == 0] = 0.0
-    return merged_confidence
-
-
-def compute_confidence_activation_score(confidence_map: np.ndarray, base_mask: np.ndarray) -> float:
-    active_values = confidence_map[base_mask > 0]
-    if active_values.size == 0:
-        return 0.0
-    return float(np.percentile(active_values, 95))
-
-
-def build_active_spans(frame_count: int, mask_directory: str) -> list[tuple[int, int]]:
-    spans: list[tuple[int, int]] = []
-    span_start: int | None = None
-
-    for frame_index in range(frame_count):
-        base_mask = load_temp_array(mask_directory, frame_index).astype(np.uint8, copy=False)
-        is_active = cv2.countNonZero(base_mask) > 0
-        if is_active and span_start is None:
-            span_start = frame_index
-        elif not is_active and span_start is not None:
-            spans.append((span_start, frame_index - 1))
-            span_start = None
-
-    if span_start is not None:
-        spans.append((span_start, frame_count - 1))
-
-    return spans
-
-
-def build_segment_coverage_plans(
-    frame_count: int,
-    mask_directory: str,
-    confidence_directory: str,
-) -> list[SegmentCoveragePlan | None]:
-    coverage_plans: list[SegmentCoveragePlan | None] = [None] * frame_count
-
-    for span_start, span_end in build_active_spans(frame_count, mask_directory):
-        best_frame_index = span_start
-        best_score = -1.0
-        span_center = 0.5 * (span_start + span_end)
-        detected_indices: list[int] = []
-
-        for frame_index in range(span_start, span_end + 1):
-            base_mask = load_temp_array(mask_directory, frame_index).astype(np.uint8, copy=False)
-            confidence_map = load_temp_array(confidence_directory, frame_index).astype(np.float32, copy=False)
-            score = compute_confidence_activation_score(confidence_map, base_mask)
-            is_better_score = score > best_score + 1e-6
-            is_tie_but_more_central = abs(frame_index - span_center) < abs(best_frame_index - span_center)
-            if is_better_score or (abs(score - best_score) <= 1e-6 and is_tie_but_more_central):
-                best_score = score
-                best_frame_index = frame_index
-            if score >= SEGMENT_DETECT_TRIGGER:
-                detected_indices.append(frame_index)
-
-        if detected_indices:
-            detected_start = detected_indices[0]
-            detected_end = detected_indices[-1]
-        elif best_score >= SEGMENT_REFERENCE_TRIGGER:
-            detected_start = best_frame_index
-            detected_end = best_frame_index
-        else:
+    for frame_index in range(segment.start_frame, segment.end_frame + 1):
+        frame = load_temp_array(source_directory, frame_index).astype(np.uint8, copy=False)
+        crop = frame[y : y + h, x : x + w]
+        if crop.size == 0:
             continue
+        candidate_masks.append(build_candidate_mask(crop))
+        luminance_crops.append(compute_luminance_map(crop))
 
-        coverage_start = max(span_start, detected_start - SEGMENT_BACKFILL_BEFORE_FRAMES)
-        coverage_end = min(span_end, detected_end + SEGMENT_BACKFILL_AFTER_FRAMES)
-        plan = SegmentCoveragePlan(
-            span_start=span_start,
-            span_end=span_end,
-            detected_start=detected_start,
-            detected_end=detected_end,
-            coverage_start=coverage_start,
-            coverage_end=coverage_end,
-            reference_index=best_frame_index,
-        )
+    if not candidate_masks:
+        return np.zeros((h, w), dtype=np.uint8)
 
-        for frame_index in range(coverage_start, coverage_end + 1):
-            coverage_plans[frame_index] = plan
+    if len(candidate_masks) == 1:
+        return refine_local_mask(candidate_masks[0])
 
-    return coverage_plans
+    luminance_stack = np.stack(luminance_crops, axis=0).astype(np.float32, copy=False)
+    median_luminance = np.median(luminance_stack, axis=0)
+    frame_deltas = np.mean(np.abs(luminance_stack - median_luminance[None, ...]), axis=(1, 2))
 
+    keep_count = max(1, min(len(candidate_masks), int(np.ceil(len(candidate_masks) * STABLE_FRAME_KEEP_RATIO))))
+    stable_indices = np.flatnonzero(frame_deltas <= STABLE_FRAME_DELTA_THRESHOLD)
+    if stable_indices.size < keep_count:
+        stable_indices = np.argsort(frame_deltas)[:keep_count]
 
-def propagate_temporal_confidence_maps(
-    frame_count: int,
-    source_directory: str,
-    mask_directory: str,
-    initial_confidence_directory: str,
-    forward_confidence_directory: str,
-    final_confidence_directory: str,
-) -> None:
-    emit_status("Propagating watermark confidence forward...")
-    previous_effective_bundle: SourceFrameBundle | None = None
+    candidate_stack = np.stack(candidate_masks, axis=0) > 0
+    stable_candidate_stack = candidate_stack[stable_indices]
+    presence_map = np.mean(stable_candidate_stack.astype(np.float32), axis=0)
+    stable_mask = np.where(presence_map >= STABLE_MASK_PRESENCE_RATIO, 255, 0).astype(np.uint8)
 
-    for frame_index in range(frame_count):
-        current_bundle = load_source_frame_bundle(
-            frame_index,
-            source_directory,
-            mask_directory,
-            initial_confidence_directory,
-        )
-        effective_confidence = merge_confidence_with_neighbor(
-            current_bundle,
-            current_bundle.watermark_confidence.copy(),
-            previous_effective_bundle,
-            WATERMARK_PREVIOUS_SUPPORT_GAIN,
-        )
-        save_temp_array(forward_confidence_directory, frame_index, effective_confidence.astype(np.float32))
-        previous_effective_bundle = SourceFrameBundle(
-            source_frame=current_bundle.source_frame,
-            base_mask=current_bundle.base_mask,
-            watermark_confidence=effective_confidence,
-        )
-        emit_progress(0.15 + 0.15 * ((frame_index + 1) / max(1, frame_count)))
+    if cv2.countNonZero(stable_mask) == 0:
+        best_frame_index = int(np.argmin(frame_deltas))
+        stable_mask = candidate_masks[best_frame_index]
 
-    emit_status("Propagating watermark confidence backward...")
-    next_effective_bundle: SourceFrameBundle | None = None
-
-    for reverse_index, frame_index in enumerate(range(frame_count - 1, -1, -1), start=1):
-        current_bundle = load_source_frame_bundle(
-            frame_index,
-            source_directory,
-            mask_directory,
-            initial_confidence_directory,
-        )
-        effective_confidence = load_temp_array(forward_confidence_directory, frame_index).astype(np.float32, copy=False)
-        effective_confidence = merge_confidence_with_neighbor(
-            current_bundle,
-            effective_confidence,
-            next_effective_bundle,
-            WATERMARK_NEXT_SUPPORT_GAIN,
-        )
-        hysteresis_mask = build_hysteresis_mask(effective_confidence)
-        effective_confidence[hysteresis_mask == 0] = 0.0
-        save_temp_array(final_confidence_directory, frame_index, effective_confidence.astype(np.float32))
-        next_effective_bundle = SourceFrameBundle(
-            source_frame=current_bundle.source_frame,
-            base_mask=current_bundle.base_mask,
-            watermark_confidence=effective_confidence,
-        )
-        emit_progress(0.30 + 0.15 * (reverse_index / max(1, frame_count)))
+    return refine_local_mask(stable_mask)
 
 
-def apply_segment_backfill_coverage(
-    frame_count: int,
-    source_directory: str,
-    mask_directory: str,
-    input_confidence_directory: str,
-    output_confidence_directory: str,
-    coverage_plans: list[SegmentCoveragePlan | None],
-) -> None:
-    emit_status("Applying segment backfill coverage...")
-    reference_bundle_cache: dict[int, SourceFrameBundle] = {}
+def build_segment_mask_plans(segments: list[BoxSegment], source_directory: str) -> list[SegmentMaskPlan]:
+    plans: list[SegmentMaskPlan] = []
+    total_segments = max(1, len(segments))
 
-    for frame_index in range(frame_count):
-        current_bundle = load_source_frame_bundle(
-            frame_index,
-            source_directory,
-            mask_directory,
-            input_confidence_directory,
-        )
-        extended_confidence = current_bundle.watermark_confidence.copy()
-        coverage_plan = coverage_plans[frame_index]
-        reference_support = None
-
-        if coverage_plan is not None:
-            reference_bundle = reference_bundle_cache.get(coverage_plan.reference_index)
-            if reference_bundle is None:
-                reference_bundle = load_source_frame_bundle(
-                    coverage_plan.reference_index,
-                    source_directory,
-                    mask_directory,
-                    input_confidence_directory,
+    emit_status("Building stable watermark masks for enabled box ranges...")
+    for segment_index, segment in enumerate(segments, start=1):
+        local_mask = build_segment_stable_local_mask(segment, source_directory)
+        if cv2.countNonZero(local_mask) == 0:
+            emit_status(
+                f"Segment {segment_index}/{total_segments}: no stable watermark mask found, skipping range "
+                f"{segment.start_frame}-{segment.end_frame}."
+            )
+        else:
+            plans.append(
+                SegmentMaskPlan(
+                    start_frame=segment.start_frame,
+                    end_frame=segment.end_frame,
+                    rect=segment.rect,
+                    local_mask=local_mask,
                 )
-                reference_bundle_cache[coverage_plan.reference_index] = reference_bundle
-
-            reference_score = compute_confidence_activation_score(
-                reference_bundle.watermark_confidence,
-                reference_bundle.base_mask,
             )
-            if reference_score >= SEGMENT_REFERENCE_TRIGGER:
-                if coverage_plan.reference_index == frame_index:
-                    reference_support = reference_bundle.watermark_confidence.copy()
-                else:
-                    reference_support = build_neighbor_confidence_support(current_bundle, reference_bundle)
-                if reference_support is not None:
-                    extended_confidence = np.maximum(
-                        extended_confidence,
-                        np.clip(reference_support * SEGMENT_REFERENCE_GAIN, 0.0, 1.0),
-                    )
-                    reference_floor = np.where(
-                        reference_support >= SEGMENT_REFERENCE_TRIGGER * 0.5,
-                        SEGMENT_REFERENCE_FLOOR,
-                        0.0,
-                    )
-                    extended_confidence = np.maximum(extended_confidence, reference_floor)
+        emit_progress(0.25 + 0.30 * (segment_index / total_segments))
 
-            is_forced_edge_frame = (
-                frame_index < coverage_plan.detected_start or frame_index > coverage_plan.detected_end
-            )
-            if is_forced_edge_frame:
-                if reference_support is not None and np.any(reference_support >= SEGMENT_DETECT_TRIGGER * 0.5):
-                    forced_floor = np.where(
-                        reference_support >= SEGMENT_DETECT_TRIGGER * 0.5,
-                        SEGMENT_BACKFILL_FLOOR,
-                        0.0,
-                    )
-                else:
-                    forced_floor = np.where(current_bundle.base_mask > 0, SEGMENT_BACKFILL_FLOOR, 0.0)
-                extended_confidence = np.maximum(extended_confidence, forced_floor)
-
-        hysteresis_mask = build_hysteresis_mask(extended_confidence)
-        extended_confidence[hysteresis_mask == 0] = 0.0
-        save_temp_array(output_confidence_directory, frame_index, extended_confidence.astype(np.float32))
-        emit_progress(0.45 + 0.15 * ((frame_index + 1) / max(1, frame_count)))
+    return plans
 
 
-def process_source_frame_bundle(
-    current_bundle: SourceFrameBundle,
-    model_manager: ModelManager,
-    job: dict,
-) -> ProcessedFrameBundle:
-    if cv2.countNonZero(current_bundle.base_mask) == 0:
-        return ProcessedFrameBundle(
-            source_frame=current_bundle.source_frame.copy(),
-            processed_frame=current_bundle.source_frame.copy(),
-            mask=current_bundle.base_mask.copy(),
-            watermark_confidence=current_bundle.watermark_confidence.copy(),
-        )
+def build_plans_by_frame(frame_count: int, plans: list[SegmentMaskPlan]) -> list[list[SegmentMaskPlan]]:
+    plans_by_frame: list[list[SegmentMaskPlan]] = [[] for _ in range(frame_count)]
+    for plan in plans:
+        for frame_index in range(plan.start_frame, plan.end_frame + 1):
+            plans_by_frame[frame_index].append(plan)
+    return plans_by_frame
 
-    watermark_confidence = current_bundle.watermark_confidence.copy()
-    hysteresis_mask = build_hysteresis_mask(watermark_confidence)
-    watermark_confidence[hysteresis_mask == 0] = 0.0
-    core_mask, full_mask = build_two_pass_inpaint_masks(
-        current_bundle.source_frame,
-        current_bundle.base_mask,
-        watermark_confidence,
-        hysteresis_mask,
-    )
-    inpainted_frame = run_two_pass_inpaint(
-        current_bundle.source_frame,
-        core_mask,
-        full_mask,
-        model_manager,
-        job,
-    )
-    processed_frame = composite_masked_result(
-        current_bundle.source_frame,
-        inpainted_frame,
-        full_mask,
-        alpha_confidence_map=watermark_confidence,
-    )
-    return ProcessedFrameBundle(
-        source_frame=current_bundle.source_frame.copy(),
-        processed_frame=processed_frame,
-        mask=full_mask,
-        watermark_confidence=watermark_confidence,
-    )
+
+def compose_frame_mask(frame_shape: tuple[int, int, int], plans: list[SegmentMaskPlan]) -> np.ndarray:
+    height, width = frame_shape[:2]
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for plan in plans:
+        x, y, w, h = plan.rect
+        if w <= 0 or h <= 0:
+            continue
+        target = mask[y : y + h, x : x + w]
+        np.maximum(target, plan.local_mask, out=target)
+    return mask
 
 
 def resolve_ffmpeg() -> str | None:
@@ -1072,20 +440,45 @@ def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: s
     move_temp_to_output(temp_video_path, output_path)
 
 
-def process_image(input_path: str, output_path: str, runtimes: list[TrackRuntime], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
-    emit_status("Processing image with LaMa (Max quality)...")
+def process_image(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
+    emit_status("Processing image with stable watermark mask...")
     image_bgr = cv2.imread(input_path, cv2.IMREAD_COLOR)
     if image_bgr is None or image_bgr.size == 0:
         raise RuntimeError(f"Failed to read image: {input_path}")
 
+    segments = extract_box_segments(tracks, 1, image_bgr.shape[1], image_bgr.shape[0], mask_padding)
+    mask = np.zeros(image_bgr.shape[:2], dtype=np.uint8)
+    temp_source_directory = save_single_frame_temp_directory(image_bgr)
+
+    try:
+        for segment in segments:
+            local_mask = build_segment_stable_local_mask(segment, temp_source_directory)
+            if cv2.countNonZero(local_mask) == 0:
+                continue
+            x, y, w, h = segment.rect
+            target = mask[y : y + h, x : x + w]
+            np.maximum(target, local_mask, out=target)
+    finally:
+        shutil.rmtree(temp_source_directory, ignore_errors=True)
+
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    source_bundle = build_source_frame_bundle(image_bgr, 0, runtimes, mask_padding)
-    result_bundle = process_source_frame_bundle(source_bundle, model_manager, job)
-    cv2.imwrite(output_path, result_bundle.processed_frame)
+    if cv2.countNonZero(mask) == 0:
+        cv2.imwrite(output_path, image_bgr)
+        emit_progress(1.0)
+        return
+
+    result_frame = process_image_with_lama(image_bgr, mask, model_manager, job)
+    cv2.imwrite(output_path, result_frame)
     emit_progress(1.0)
 
 
-def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
+def save_single_frame_temp_directory(frame: np.ndarray) -> str:
+    temp_directory = tempfile.mkdtemp(prefix="trackbox-image-mask-")
+    save_temp_array(temp_directory, 0, frame.astype(np.uint8, copy=False))
+    return temp_directory
+
+
+def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
     emit_status("Opening video...")
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
@@ -1101,42 +494,22 @@ def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime
 
     temp_directory = tempfile.mkdtemp(prefix="trackbox-lama-")
     source_directory = os.path.join(temp_directory, "source-frames")
-    mask_directory = os.path.join(temp_directory, "base-masks")
-    initial_confidence_directory = os.path.join(temp_directory, "confidence-initial")
-    forward_confidence_directory = os.path.join(temp_directory, "confidence-forward")
-    final_confidence_directory = os.path.join(temp_directory, "confidence-final")
-    extended_confidence_directory = os.path.join(temp_directory, "confidence-extended")
     temp_video_path = os.path.join(temp_directory, "video-temp.mp4")
     os.makedirs(source_directory, exist_ok=True)
-    os.makedirs(mask_directory, exist_ok=True)
-    os.makedirs(initial_confidence_directory, exist_ok=True)
-    os.makedirs(forward_confidence_directory, exist_ok=True)
-    os.makedirs(final_confidence_directory, exist_ok=True)
-    os.makedirs(extended_confidence_directory, exist_ok=True)
 
     writer: cv2.VideoWriter | None = None
-    processed_queue: deque[ProcessedFrameBundle] = deque()
-    previous_output_bundle: ProcessedFrameBundle | None = None
 
     try:
-        emit_status("Collecting source frames and watermark confidence...")
+        emit_status("Collecting source frames...")
         frame_index = 0
-
         while True:
             ok, frame = capture.read()
             if not ok or frame is None or frame.size == 0:
                 break
 
-            source_bundle = build_source_frame_bundle(frame, frame_index, runtimes, mask_padding)
-            save_source_frame_bundle(
-                source_bundle,
-                frame_index,
-                source_directory,
-                mask_directory,
-                initial_confidence_directory,
-            )
+            save_temp_array(source_directory, frame_index, frame.astype(np.uint8, copy=False))
             frame_index += 1
-            emit_progress(0.15 * (frame_index / max(1, total_frames)))
+            emit_progress(0.25 * (frame_index / max(1, total_frames)))
 
         capture.release()
         capture = None
@@ -1145,27 +518,23 @@ def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime
         if frame_count == 0:
             raise RuntimeError(f"Failed to read video frames: {input_path}")
 
-        propagate_temporal_confidence_maps(
-            frame_count,
-            source_directory,
-            mask_directory,
-            initial_confidence_directory,
-            forward_confidence_directory,
-            final_confidence_directory,
-        )
-        segment_coverage_plans = build_segment_coverage_plans(
-            frame_count,
-            mask_directory,
-            final_confidence_directory,
-        )
-        apply_segment_backfill_coverage(
-            frame_count,
-            source_directory,
-            mask_directory,
-            final_confidence_directory,
-            extended_confidence_directory,
-            segment_coverage_plans,
-        )
+        segments = extract_box_segments(tracks, frame_count, width, height, mask_padding)
+        if not segments:
+            emit_status("No enabled box ranges found. Copying input without changes.")
+            shutil.copyfile(input_path, output_path)
+            emit_progress(1.0)
+            shutil.rmtree(temp_directory, ignore_errors=True)
+            return
+
+        segment_plans = build_segment_mask_plans(segments, source_directory)
+        if not segment_plans:
+            emit_status("No stable watermark masks survived the thresholds. Copying input without changes.")
+            shutil.copyfile(input_path, output_path)
+            emit_progress(1.0)
+            shutil.rmtree(temp_directory, ignore_errors=True)
+            return
+
+        plans_by_frame = build_plans_by_frame(frame_count, segment_plans)
 
         writer = cv2.VideoWriter(
             temp_video_path,
@@ -1176,40 +545,20 @@ def process_video(input_path: str, output_path: str, runtimes: list[TrackRuntime
         if not writer.isOpened():
             raise RuntimeError(f"Failed to create output video: {temp_video_path}")
 
+        emit_status("Applying identical segment masks across each enabled range...")
         progress_stride = max(1, frame_count // 200)
-        emit_status("Applying LaMa inpainting with two-pass temporal masks...")
-        written_frames = 0
 
         for frame_index in range(frame_count):
-            source_bundle = load_source_frame_bundle(
-                frame_index,
-                source_directory,
-                mask_directory,
-                extended_confidence_directory,
-            )
-            processed_queue.append(process_source_frame_bundle(source_bundle, model_manager, job))
+            frame = load_temp_array(source_directory, frame_index).astype(np.uint8, copy=False)
+            frame_mask = compose_frame_mask(frame.shape, plans_by_frame[frame_index])
+            if cv2.countNonZero(frame_mask) == 0:
+                output_frame = frame
+            else:
+                output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
+            writer.write(output_frame)
 
-            while len(processed_queue) >= 2:
-                current_bundle = processed_queue[0]
-                next_bundle = processed_queue[1]
-                output_bundle = temporally_stabilize_bundle(current_bundle, previous_output_bundle, next_bundle)
-                writer.write(output_bundle.processed_frame)
-                previous_output_bundle = output_bundle
-                processed_queue.popleft()
-                written_frames += 1
-                if written_frames == frame_count or written_frames % progress_stride == 0:
-                    emit_progress(0.60 + 0.40 * (written_frames / frame_count))
-
-        while processed_queue:
-            current_bundle = processed_queue[0]
-            next_bundle = processed_queue[1] if len(processed_queue) > 1 else None
-            output_bundle = temporally_stabilize_bundle(current_bundle, previous_output_bundle, next_bundle)
-            writer.write(output_bundle.processed_frame)
-            previous_output_bundle = output_bundle
-            processed_queue.popleft()
-            written_frames += 1
-            if written_frames == frame_count or written_frames % progress_stride == 0:
-                emit_progress(0.60 + 0.40 * (written_frames / frame_count))
+            if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
+                emit_progress(0.55 + 0.45 * ((frame_index + 1) / frame_count))
 
         writer.release()
         writer = None
@@ -1245,12 +594,11 @@ def main() -> int:
     model_manager = load_lama_model(device)
     emit_status("LaMa model loaded.")
 
-    runtimes = create_runtime_tracks(tracks)
     suffix = Path(input_path).suffix.lower()
-    if suffix in {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}:
-        process_video(input_path, output_path, runtimes, model_manager, job, mask_padding)
+    if suffix in VIDEO_EXTENSIONS:
+        process_video(input_path, output_path, tracks, model_manager, job, mask_padding)
     else:
-        process_image(input_path, output_path, runtimes, model_manager, job, mask_padding)
+        process_image(input_path, output_path, tracks, model_manager, job, mask_padding)
 
     emit_status("LaMa processing finished.")
     return 0
