@@ -58,6 +58,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _dragStart;
     private int _pendingFrameIndex;
     private int _frameRequestId;
+    private string _selectedInpaintStrategy = "lama";
 
     private enum OverlayInteractionMode
     {
@@ -113,6 +114,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ObservableCollection<TimelineTrack> Tracks { get; }
 
     public ObservableCollection<OverlayBox> OverlayBoxes { get; }
+
+    public IReadOnlyList<string> InpaintStrategyOptions { get; } =
+    [
+        "lama",
+        "whiteness-delta",
+        "opencv-telea",
+        "opencv-ns",
+    ];
+
+    public string SelectedInpaintStrategy
+    {
+        get => _selectedInpaintStrategy;
+        set => SetProperty(ref _selectedInpaintStrategy, value);
+    }
 
     public WatermarkDefinition? SelectedWatermarkDefinition
     {
@@ -540,8 +555,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var window = new InpaintCoverageSettingsWindow
         {
             Owner = this,
+            SelectedInpaintStrategy = SelectedInpaintStrategy,
         };
         window.ShowDialog();
+        SelectedInpaintStrategy = window.SelectedInpaintStrategy;
     }
 
     private async void AddWatermark_Click(object sender, RoutedEventArgs e)
@@ -998,7 +1015,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
             });
 
-            await _processingService.ProcessAsync(InputPath, OutputPath, trackSnapshot, progress, status, CancellationToken.None);
+            await _processingService.ProcessAsync(
+                InputPath,
+                OutputPath,
+                trackSnapshot,
+                progress,
+                status,
+                CancellationToken.None,
+                inpaintStrategy: SelectedInpaintStrategy);
 
             ProgressValue = 100;
             StatusText = $"Done. Output written to {OutputPath}.";
