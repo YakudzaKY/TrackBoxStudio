@@ -17,6 +17,18 @@
     <MSBuild Projects="TrackBoxStudio.Tests/TrackBoxStudio.Tests.csproj" Targets="Build" Properties="Configuration=$(Configuration);Platform=$(Platform)" />
   </Target>
   <ItemGroup>
+    <Content Include="Assets\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Data\lama-coverage-config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Scripts\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

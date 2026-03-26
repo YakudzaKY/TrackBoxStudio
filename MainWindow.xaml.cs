@@ -535,6 +535,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void OpenInpaintTuning_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new InpaintCoverageSettingsWindow
+        {
+            Owner = this,
+        };
+        window.ShowDialog();
+    }
+
     private async void AddWatermark_Click(object sender, RoutedEventArgs e)
     {
         await CreateWatermarkAsync();

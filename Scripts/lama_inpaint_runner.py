@@ -55,9 +55,9 @@ def merge_coverage_config(defaults: dict[str, int | float]) -> dict[str, int | f
 
 DEFAULT_COVERAGE_CONFIG = {
     # Lower = dimmer white-ish pixels start contributing to the stable mask.
-    "mask_min_whiteness": 0.56,
+    "mask_min_whiteness": 0.46,
     # Lower = darker but still bright watermark pixels are allowed into the stable mask.
-    "mask_min_luminance": 0.60,
+    "mask_min_luminance": 0.50,
     # Lower = more frames are treated as outliers when the crop changes too much.
     "stable_frame_delta_threshold": 0.12,
     # If too few frames survive the delta filter, keep at least this fraction of the calmest ones.

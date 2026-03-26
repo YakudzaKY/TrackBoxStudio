@@ -65,6 +65,7 @@
                     <Button Content="Open Project" Click="OpenProject_Click" Margin="0,0,10,0" />
                     <Button Content="Save Project" Click="SaveProject_Click" IsEnabled="{Binding CanSaveProject}" Margin="0,0,10,0" />
                     <Button Content="Choose Output" Click="ChooseOutput_Click" Margin="0,0,10,0" />
+                    <Button Content="Inpaint Tuning" Click="OpenInpaintTuning_Click" Margin="0,0,10,0" />
                     <Button Content="Add Track" Click="AddTrack_Click" IsEnabled="{Binding IsMediaLoaded}" Margin="0,0,10,0" />
                 </StackPanel>
 
