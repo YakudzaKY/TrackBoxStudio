@@ -567,7 +567,7 @@ def save_single_frame_temp_directory(frame: np.ndarray) -> str:
     return temp_directory
 
 
-def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
+def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager | None, job: dict, mask_padding: int) -> None:
     emit_status("Opening video...")
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
@@ -645,7 +645,11 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
             if cv2.countNonZero(frame_mask) == 0:
                 output_frame = frame
             else:
-                output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
+                if model_manager is None:
+                    output_frame = frame.copy()
+                    output_frame[frame_mask > 0] = output_frame[frame_mask > 0] * 0.5 + np.array([0, 255, 0]) * 0.5
+                else:
+                    output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
             save_temp_array(processed_directory, frame_index, output_frame)
 
             if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
