@@ -440,7 +440,7 @@ def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: s
     move_temp_to_output(temp_video_path, output_path)
 
 
-def process_image(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager | None, job: dict, mask_padding: int) -> None:
+def process_image(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
     emit_status("Processing image with stable watermark mask...")
     image_bgr = cv2.imread(input_path, cv2.IMREAD_COLOR)
     if image_bgr is None or image_bgr.size == 0:
@@ -467,11 +467,7 @@ def process_image(input_path: str, output_path: str, tracks: list[dict], model_m
         emit_progress(1.0)
         return
 
-    if model_manager is None:
-        result_frame = image_bgr.copy()
-        result_frame[mask > 0] = result_frame[mask > 0] * 0.5 + np.array([0, 255, 0]) * 0.5
-    else:
-        result_frame = process_image_with_lama(image_bgr, mask, model_manager, job)
+    result_frame = process_image_with_lama(image_bgr, mask, model_manager, job)
     cv2.imwrite(output_path, result_frame)
     emit_progress(1.0)
 
@@ -482,7 +478,7 @@ def save_single_frame_temp_directory(frame: np.ndarray) -> str:
     return temp_directory
 
 
-def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager | None, job: dict, mask_padding: int) -> None:
+def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager, job: dict, mask_padding: int) -> None:
     emit_status("Opening video...")
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
@@ -558,11 +554,7 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
             if cv2.countNonZero(frame_mask) == 0:
                 output_frame = frame
             else:
-                if model_manager is None:
-                    output_frame = frame.copy()
-                    output_frame[frame_mask > 0] = output_frame[frame_mask > 0] * 0.5 + np.array([0, 255, 0]) * 0.5
-                else:
-                    output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
+                output_frame = process_image_with_lama(frame, frame_mask, model_manager, job)
             writer.write(output_frame)
 
             if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
@@ -597,15 +589,10 @@ def main() -> int:
     mask_padding = max(0, int(job.get("maskPadding", 0)))
     device = resolve_device(job.get("devicePreference", "cuda-preferred"))
     quality_preset = str(job.get("qualityPreset", "max")).strip() or "max"
-    render_mask_only = bool(job.get("renderMaskOnly", False))
 
-    if render_mask_only:
-        emit_status("Render mask only requested. Skipping LaMa model load.")
-        model_manager = None
-    else:
-        emit_status(f"Loading LaMa model on {device} ({quality_preset} quality)...")
-        model_manager = load_lama_model(device)
-        emit_status("LaMa model loaded.")
+    emit_status(f"Loading LaMa model on {device} ({quality_preset} quality)...")
+    model_manager = load_lama_model(device)
+    emit_status("LaMa model loaded.")
 
     suffix = Path(input_path).suffix.lower()
     if suffix in VIDEO_EXTENSIONS:
