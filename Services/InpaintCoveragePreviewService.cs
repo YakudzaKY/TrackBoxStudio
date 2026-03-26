@@ -29,7 +29,8 @@ public sealed class InpaintCoveragePreviewService
 
     public async Task<PreviewRenderResult> RenderPreviewAsync(
         IProgress<string>? status,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string inpaintStrategy = "lama")
     {
         var samples = BuildSampleDefinitions();
         var tempDirectory = Path.Combine(Path.GetTempPath(), $"trackbox-inpaint-preview-{Guid.NewGuid():N}");
@@ -51,7 +52,8 @@ public sealed class InpaintCoveragePreviewService
                 progress: null,
                 status: status,
                 cancellationToken: cancellationToken,
-                renderMaskOnly: true);
+                renderMaskOnly: true,
+                inpaintStrategy: inpaintStrategy);
 
             status?.Report("Generating inpaint preview...");
             await _processingService.ProcessAsync(
@@ -60,7 +62,8 @@ public sealed class InpaintCoveragePreviewService
                 previewTracks,
                 progress: null,
                 status: status,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                inpaintStrategy: inpaintStrategy);
 
             var maskCropPaths = ExtractPreviewCrops(maskVideoPath, tempDirectory, "mask", samples.Count);
             var outputCropPaths = ExtractPreviewCrops(outputVideoPath, tempDirectory, "output", samples.Count);
