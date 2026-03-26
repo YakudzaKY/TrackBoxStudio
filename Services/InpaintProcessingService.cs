@@ -21,8 +21,7 @@ public sealed class InpaintProcessingService
         IProgress<double>? progress,
         IProgress<string>? status,
         CancellationToken cancellationToken,
-        bool renderMaskOnly = false,
-        string inpaintStrategy = "lama")
+        bool renderMaskOnly = false)
     {
         if (string.IsNullOrWhiteSpace(inputPath))
         {
@@ -39,7 +38,7 @@ public sealed class InpaintProcessingService
             throw new InvalidOperationException("There are no timeline keyframes to process.");
         }
 
-        var job = BuildJob(inputPath, outputPath, tracks, renderMaskOnly, inpaintStrategy);
+        var job = BuildJob(inputPath, outputPath, tracks, renderMaskOnly);
         var payloadPath = Path.Combine(Path.GetTempPath(), $"trackbox-lama-{Guid.NewGuid():N}.json");
 
         try
@@ -64,8 +63,7 @@ public sealed class InpaintProcessingService
         string inputPath,
         string outputPath,
         IReadOnlyList<TimelineTrack> tracks,
-        bool renderMaskOnly,
-        string inpaintStrategy)
+        bool renderMaskOnly)
     {
         return new LamaProcessingJobDocument
         {
@@ -73,7 +71,6 @@ public sealed class InpaintProcessingService
             OutputPath = outputPath,
             QualityPreset = "max",
             DevicePreference = "cuda-preferred",
-            InpaintStrategy = string.IsNullOrWhiteSpace(inpaintStrategy) ? "lama" : inpaintStrategy.Trim(),
             MaskPadding = 16,
             LdmSteps = 100,
             CropMargin = 128,

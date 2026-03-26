@@ -31,7 +31,6 @@ public partial class InpaintCoverageSettingsWindow : Window, INotifyPropertyChan
     private bool _isBusy;
     private string _statusText = "Loading stable-mask tuning...";
     private string? _previewTempDirectory;
-    private string _selectedInpaintStrategy = "lama";
 
     public InpaintCoverageSettingsWindow()
     {
@@ -49,20 +48,6 @@ public partial class InpaintCoverageSettingsWindow : Window, INotifyPropertyChan
     public ObservableCollection<PreviewCard> ReferenceSamples { get; } = [];
 
     public ObservableCollection<PreviewCard> PreviewSamples { get; } = [];
-
-    public IReadOnlyList<string> InpaintStrategyOptions { get; } =
-    [
-        "lama",
-        "whiteness-delta",
-        "opencv-telea",
-        "opencv-ns",
-    ];
-
-    public string SelectedInpaintStrategy
-    {
-        get => _selectedInpaintStrategy;
-        set => SetProperty(ref _selectedInpaintStrategy, value);
-    }
 
     public string StatusText
     {
@@ -193,10 +178,7 @@ public partial class InpaintCoverageSettingsWindow : Window, INotifyPropertyChan
                 }
             });
 
-            var result = await _previewService.RenderPreviewAsync(
-                previewStatus,
-                CancellationToken.None,
-                SelectedInpaintStrategy);
+            var result = await _previewService.RenderPreviewAsync(previewStatus, CancellationToken.None);
             ApplyPreviewResult(result);
             StatusText = "Preview refreshed.";
         }
