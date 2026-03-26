@@ -467,7 +467,7 @@ def apply_temporal_segment_blend(
         if start <= 0:
             continue
 
-        carry_frame = load_temp_array(source_directory, start - 1).astype(np.uint8, copy=False)
+        carry_frame = load_temp_array(processed_directory, start - 1).astype(np.uint8, copy=False)
         for frame_index in range(start, end + 1):
             blend_alpha = compute_temporal_blend_alpha(frame_index, start, end)
             if blend_alpha <= 0.0:
