@@ -51,7 +51,8 @@ public sealed class InpaintCoveragePreviewService
                 progress: null,
                 status: status,
                 cancellationToken: cancellationToken,
-                renderMaskOnly: true);
+                renderMaskOnly: true,
+                preserveAudio: false);
 
             status?.Report("Generating inpaint preview...");
             await _processingService.ProcessAsync(
@@ -60,7 +61,8 @@ public sealed class InpaintCoveragePreviewService
                 previewTracks,
                 progress: null,
                 status: status,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                preserveAudio: false);
 
             var maskCropPaths = ExtractPreviewCrops(maskVideoPath, tempDirectory, "mask", samples.Count);
             var outputCropPaths = ExtractPreviewCrops(outputVideoPath, tempDirectory, "output", samples.Count);

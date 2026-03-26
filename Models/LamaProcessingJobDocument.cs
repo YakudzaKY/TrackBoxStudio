@@ -22,6 +22,8 @@ public sealed class LamaProcessingJobDocument
 
     public bool RenderMaskOnly { get; set; }
 
+    public bool PreserveAudio { get; set; } = true;
+
     public List<LamaProcessingTrackDocument> Tracks { get; set; } = [];
 }
 

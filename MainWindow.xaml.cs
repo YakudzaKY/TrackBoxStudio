@@ -23,6 +23,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly WatermarkRegistryService _registryService = new();
     private readonly MediaDocumentService _mediaService = new();
     private readonly InpaintProcessingService _processingService = new();
+    private readonly InpaintCoverageSettingsService _coverageSettingsService = new();
     private readonly ProjectPersistenceService _projectService = new();
     private readonly DispatcherTimer _frameLoadTimer;
     private readonly string[] _trackColors =
@@ -48,6 +49,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private int _frameHeight;
     private bool _isMediaLoaded;
     private bool _isBusy;
+    private bool _preserveAudioOnExport = true;
     private double _progressValue;
     private string _statusText = "Open a file to start a new session.";
     private BoxRect? _draftBox;
@@ -58,6 +60,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _dragStart;
     private int _pendingFrameIndex;
     private int _frameRequestId;
+    private bool _suppressProcessingPreferenceSave;
 
     private enum OverlayInteractionMode
     {
@@ -154,6 +157,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (SetProperty(ref _inputPath, value))
             {
                 OnPropertyChanged(nameof(CanSaveProject));
+                OnPropertyChanged(nameof(CanPreserveAudio));
             }
         }
     }
@@ -262,6 +266,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanRemoveKeyframeHere));
                 OnPropertyChanged(nameof(CanToggleTrackStateHere));
                 OnPropertyChanged(nameof(CanSaveProject));
+                OnPropertyChanged(nameof(CanPreserveAudio));
             }
         }
     }
@@ -279,6 +284,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanRemoveKeyframeHere));
                 OnPropertyChanged(nameof(CanToggleTrackStateHere));
                 OnPropertyChanged(nameof(CanSaveProject));
+                OnPropertyChanged(nameof(CanPreserveAudio));
+            }
+        }
+    }
+
+    public bool PreserveAudioOnExport
+    {
+        get => _preserveAudioOnExport;
+        set
+        {
+            if (SetProperty(ref _preserveAudioOnExport, value) && !_suppressProcessingPreferenceSave)
+            {
+                _ = SavePreserveAudioPreferenceAsync(value);
             }
         }
     }
@@ -334,6 +352,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public bool CanSaveProject => !IsBusy && (IsMediaLoaded || Tracks.Count > 0 || !string.IsNullOrWhiteSpace(CurrentProjectPath));
 
+    public bool CanPreserveAudio => !IsBusy && IsMediaLoaded && MediaDocumentService.IsVideoFile(InputPath);
+
     public string CurrentFrameDisplay => !IsMediaLoaded
         ? "Frame -"
         : $"Frame {CurrentFrameIndex} / {Math.Max(0, TotalFrames - 1)}";
@@ -370,7 +390,39 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        await LoadProcessingPreferencesAsync();
         await LoadWatermarkRegistryAsync();
+    }
+
+    private async Task LoadProcessingPreferencesAsync()
+    {
+        _suppressProcessingPreferenceSave = true;
+        try
+        {
+            PreserveAudioOnExport = await _coverageSettingsService.LoadPreserveAudioOnExportAsync();
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "Processing Preferences Load Error");
+            PreserveAudioOnExport = true;
+        }
+        finally
+        {
+            _suppressProcessingPreferenceSave = false;
+        }
+    }
+
+    private async Task SavePreserveAudioPreferenceAsync(bool preserveAudioOnExport)
+    {
+        try
+        {
+            await _coverageSettingsService.SavePreserveAudioOnExportAsync(preserveAudioOnExport);
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "Processing Preferences Save Error");
+            StatusText = $"Could not save audio preference: {ex.Message}";
+        }
     }
 
     private async Task LoadWatermarkRegistryAsync()
@@ -998,7 +1050,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
             });
 
-            await _processingService.ProcessAsync(InputPath, OutputPath, trackSnapshot, progress, status, CancellationToken.None);
+            await _processingService.ProcessAsync(
+                InputPath,
+                OutputPath,
+                trackSnapshot,
+                progress,
+                status,
+                CancellationToken.None,
+                preserveAudio: PreserveAudioOnExport && MediaDocumentService.IsVideoFile(InputPath));
 
             ProgressValue = 100;
             StatusText = $"Done. Output written to {OutputPath}.";

@@ -26,6 +26,7 @@ public sealed class InpaintCoverageSettingsServiceTests : IDisposable
         Assert.Equal(1, payload["temporal_blend_enabled"].GetInt32());
         Assert.Equal(0.26, payload["temporal_blend_edge_strength"].GetDouble(), 3);
         Assert.Equal(1.35, payload["temporal_blend_falloff_power"].GetDouble(), 3);
+        Assert.True(payload["preserve_audio_on_export"].GetBoolean());
     }
 
     [Fact]
@@ -38,6 +39,29 @@ public sealed class InpaintCoverageSettingsServiceTests : IDisposable
         Assert.Contains(entries, entry => entry.Key == "mask_min_whiteness" && entry.ValueText == "0.43");
         Assert.Contains(entries, entry => entry.Key == "mask_expand_radius" && entry.ValueText == "4");
         Assert.Contains(entries, entry => entry.Key == "temporal_blend_enabled" && entry.ValueText == "1");
+    }
+
+    [Fact]
+    public async Task LoadPreserveAudioOnExportAsync_MissingConfig_DefaultsToTrue()
+    {
+        var service = new InpaintCoverageSettingsService(_baseDirectory);
+
+        var preserveAudio = await service.LoadPreserveAudioOnExportAsync();
+
+        Assert.True(preserveAudio);
+    }
+
+    [Fact]
+    public async Task SaveEntriesAsync_PreservesAudioTogglePreference()
+    {
+        var service = new InpaintCoverageSettingsService(_baseDirectory);
+
+        await service.SavePreserveAudioOnExportAsync(false);
+        var entries = await service.LoadEntriesAsync();
+        await service.SaveEntriesAsync(entries);
+
+        var preserveAudio = await service.LoadPreserveAudioOnExportAsync();
+        Assert.False(preserveAudio);
     }
 
     public void Dispose()

@@ -520,6 +520,7 @@ def move_temp_to_output(temp_video_path: str, output_path: str) -> None:
 def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: str) -> None:
     ffmpeg = resolve_ffmpeg()
     if ffmpeg is None:
+        emit_status("ffmpeg was not found. Saving processed video without audio.")
         move_temp_to_output(temp_video_path, output_path)
         return
 
@@ -550,6 +551,7 @@ def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: s
         os.remove(temp_video_path)
         return
 
+    emit_status("ffmpeg audio copy failed. Saving processed video without audio.")
     move_temp_to_output(temp_video_path, output_path)
 
 
@@ -597,6 +599,7 @@ def save_single_frame_temp_directory(frame: np.ndarray) -> str:
 
 def process_video(input_path: str, output_path: str, tracks: list[dict], model_manager: ModelManager | None, job: dict, mask_padding: int) -> None:
     render_mask_only = bool(job.get("renderMaskOnly", False))
+    preserve_audio = bool(job.get("preserveAudio", True))
     emit_status("Opening video...")
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
@@ -696,7 +699,11 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
 
         writer.release()
         writer = None
-        copy_audio_if_possible(input_path, output_path, temp_video_path)
+        if preserve_audio:
+            copy_audio_if_possible(input_path, output_path, temp_video_path)
+        else:
+            emit_status("Saving processed video without audio copy.")
+            move_temp_to_output(temp_video_path, output_path)
         shutil.rmtree(temp_directory, ignore_errors=True)
         emit_progress(1.0)
     except Exception:

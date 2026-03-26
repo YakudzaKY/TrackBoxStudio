@@ -7,7 +7,7 @@ The project is built around one idea: stop trusting weak auto-detection, and let
 ## What it does
 
 - Opens a video or image file
-- Stores named watermark definitions in a registry that lives next to the app
+- Stores named watermark definitions in a user-global registry under `%AppData%\TrackBoxStudio`
 - Lets you create one or more timeline tracks
 - Lets each track point to a named watermark from the registry
 - Lets you draw a box on a frame and save it as a keyframe
@@ -30,7 +30,7 @@ The project is built around one idea: stop trusting weak auto-detection, and let
 - `Services/`: registry storage, media loading, bitmap conversion, and processing
 - `Scripts/lama_inpaint_runner.py`: manual-timeline LaMa backend used for final processing
 - `Dialogs/`: small prompt dialog for creating and renaming watermark definitions
-- `Data/watermark-registry.json`: named watermark registry stored beside the app
+- `%AppData%\TrackBoxStudio\watermark-registry.json`: named watermark registry shared across local projects for the current user
 - `*.trackbox.json`: reusable project files with media paths, tracks, keyframes, and future learning metadata
 
 ## How to run
@@ -56,9 +56,11 @@ dotnet run
 ## Notes
 
 - Registry entries are reusable across videos.
+- The watermark registry is user-global and auto-migrates from the older `Data/watermark-registry.json` location on first load.
 - Inpaint tuning is user-local: `Data/lama-coverage-config.json` is auto-created on first launch and is not stored in git.
 - Track timelines can be saved and reopened as standalone project files.
-- If `ffmpeg.exe` is available in `PATH`, TrackBoxStudio will try to preserve audio when exporting video.
+- The `Keep Audio` checkbox next to `Start Processing` controls whether TrackBoxStudio should try to preserve video audio on export, and the choice is remembered in the local tuning config.
+- If `ffmpeg.exe` is available in `PATH` and `Keep Audio` is enabled, TrackBoxStudio will try to preserve audio when exporting video.
 - If `ffmpeg.exe` is not available, the processed video is still exported, but audio may be dropped.
 - Project files already contain a small `learning` block reserved for future ML-assisted workflows, but no training code is enabled in the current build.
 - Final inpainting quality depends on a compatible LaMa Python environment. By default the app looks for `TRACKBOX_PYTHON_EXE`, then a bundled `python\python.exe`, then the sibling dev environment at `D:\git\Lama\python\python.exe`.

@@ -7,6 +7,9 @@ namespace TrackBoxStudio.Services;
 
 public sealed class InpaintCoverageSettingsService
 {
+    private const string PreserveAudioOnExportKey = "preserve_audio_on_export";
+    private const bool DefaultPreserveAudioOnExport = true;
+
     private sealed record SettingDefinition(
         string Key,
         string GroupName,
@@ -63,11 +66,7 @@ public sealed class InpaintCoverageSettingsService
 
     public async Task<IReadOnlyList<InpaintCoverageSettingEntry>> LoadEntriesAsync()
     {
-        EnsureSettingsFileExists();
-
-        Dictionary<string, JsonElement>? storedValues = null;
-        await using var stream = File.OpenRead(_settingsPath);
-        storedValues = await JsonSerializer.DeserializeAsync<Dictionary<string, JsonElement>>(stream, _jsonOptions);
+        var storedValues = await LoadStoredValuesAsync();
 
         var entries = new List<InpaintCoverageSettingEntry>(Definitions.Length);
         foreach (var definition in Definitions)
@@ -89,7 +88,7 @@ public sealed class InpaintCoverageSettingsService
     public async Task SaveEntriesAsync(IEnumerable<InpaintCoverageSettingEntry> entries)
     {
         var byKey = entries.ToDictionary(entry => entry.Key, StringComparer.Ordinal);
-        var payload = new Dictionary<string, object>(Definitions.Length, StringComparer.Ordinal);
+        var payload = BuildPayload(await LoadStoredValuesAsync());
 
         foreach (var definition in Definitions)
         {
@@ -102,9 +101,20 @@ public sealed class InpaintCoverageSettingsService
             payload[definition.Key] = ParseValue(entry.ValueText, definition);
         }
 
-        Directory.CreateDirectory(_dataDirectory);
-        await using var stream = File.Create(_settingsPath);
-        await JsonSerializer.SerializeAsync(stream, payload, _jsonOptions);
+        await SavePayloadAsync(payload);
+    }
+
+    public async Task<bool> LoadPreserveAudioOnExportAsync()
+    {
+        var storedValues = await LoadStoredValuesAsync();
+        return TryReadStoredBoolean(storedValues, PreserveAudioOnExportKey) ?? DefaultPreserveAudioOnExport;
+    }
+
+    public async Task SavePreserveAudioOnExportAsync(bool preserveAudioOnExport)
+    {
+        var payload = BuildPayload(await LoadStoredValuesAsync());
+        payload[PreserveAudioOnExportKey] = preserveAudioOnExport;
+        await SavePayloadAsync(payload);
     }
 
     private static string? TryReadStoredValueText(
@@ -163,12 +173,80 @@ public sealed class InpaintCoverageSettingsService
 
     private static Dictionary<string, object> BuildDefaultPayload()
     {
-        var payload = new Dictionary<string, object>(Definitions.Length, StringComparer.Ordinal);
+        var payload = new Dictionary<string, object>(Definitions.Length + 1, StringComparer.Ordinal);
         foreach (var definition in Definitions)
         {
             payload[definition.Key] = definition.DefaultValue;
         }
 
+        payload[PreserveAudioOnExportKey] = DefaultPreserveAudioOnExport;
         return payload;
+    }
+
+    private async Task<Dictionary<string, JsonElement>?> LoadStoredValuesAsync()
+    {
+        EnsureSettingsFileExists();
+
+        await using var stream = File.OpenRead(_settingsPath);
+        return await JsonSerializer.DeserializeAsync<Dictionary<string, JsonElement>>(stream, _jsonOptions);
+    }
+
+    private async Task SavePayloadAsync(Dictionary<string, object> payload)
+    {
+        Directory.CreateDirectory(_dataDirectory);
+        await using var stream = File.Create(_settingsPath);
+        await JsonSerializer.SerializeAsync(stream, payload, _jsonOptions);
+    }
+
+    private static Dictionary<string, object> BuildPayload(IReadOnlyDictionary<string, JsonElement>? storedValues)
+    {
+        var payload = new Dictionary<string, object>(Definitions.Length + 1, StringComparer.Ordinal);
+        foreach (var definition in Definitions)
+        {
+            payload[definition.Key] = TryReadStoredValue(definition, storedValues) ?? definition.DefaultValue;
+        }
+
+        payload[PreserveAudioOnExportKey] = TryReadStoredBoolean(storedValues, PreserveAudioOnExportKey) ?? DefaultPreserveAudioOnExport;
+        return payload;
+    }
+
+    private static object? TryReadStoredValue(
+        SettingDefinition definition,
+        IReadOnlyDictionary<string, JsonElement>? storedValues)
+    {
+        var valueText = TryReadStoredValueText(definition, storedValues);
+        if (string.IsNullOrWhiteSpace(valueText))
+        {
+            return null;
+        }
+
+        try
+        {
+            return ParseValue(valueText, definition);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    private static bool? TryReadStoredBoolean(
+        IReadOnlyDictionary<string, JsonElement>? storedValues,
+        string key)
+    {
+        if (storedValues is null || !storedValues.TryGetValue(key, out var element))
+        {
+            return null;
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Number when element.TryGetInt32(out var intValue) => intValue != 0,
+            JsonValueKind.String when bool.TryParse(element.GetString(), out var boolValue) => boolValue,
+            JsonValueKind.String when int.TryParse(element.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericValue) => numericValue != 0,
+            _ => null,
+        };
     }
 }
