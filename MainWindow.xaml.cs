@@ -998,7 +998,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
             });
 
-            await _processingService.ProcessAsync(InputPath, OutputPath, trackSnapshot, progress, status, CancellationToken.None);
+            await _processingService.ProcessAsync(InputPath, OutputPath, trackSnapshot, renderMaskOnly: false, progress, status, CancellationToken.None);
 
             ProgressValue = 100;
             StatusText = $"Done. Output written to {OutputPath}.";

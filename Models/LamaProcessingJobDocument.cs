@@ -20,6 +20,8 @@ public sealed class LamaProcessingJobDocument
 
     public int ResizeLimit { get; set; } = 2048;
 
+    public bool RenderMaskOnly { get; set; } = false;
+
     public List<LamaProcessingTrackDocument> Tracks { get; set; } = [];
 }
 
