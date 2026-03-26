@@ -192,6 +192,17 @@ public partial class InpaintCoverageSettingsWindow : Window, INotifyPropertyChan
         CleanupPreviewTempDirectory();
         _previewTempDirectory = result.TempDirectory;
 
+        for (var index = 0; index < ReferenceSamples.Count; index++)
+        {
+            var maskImage = index < result.MaskCropPaths.Count
+                ? LoadBitmap(result.MaskCropPaths[index])
+                : null;
+            if (maskImage != null)
+            {
+                ReferenceSamples[index].Image = maskImage;
+            }
+        }
+
         for (var index = 0; index < PreviewSamples.Count; index++)
         {
             var image = index < result.OutputCropPaths.Count
