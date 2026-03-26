@@ -8,7 +8,7 @@ public sealed class InpaintCoveragePreviewService
 {
     private sealed record PreviewSampleDefinition(string Title, string CropAssetPath, string FullFrameAssetPath);
 
-    public sealed record PreviewRenderResult(string TempDirectory, IReadOnlyList<string> OutputCropPaths);
+    public sealed record PreviewRenderResult(string TempDirectory, IReadOnlyList<string> MaskCropPaths, IReadOnlyList<string> OutputCropPaths);
 
     private static readonly BoxRect PreviewBox = new()
     {
@@ -38,21 +38,33 @@ public sealed class InpaintCoveragePreviewService
         try
         {
             var inputVideoPath = Path.Combine(tempDirectory, "preview-input.mp4");
+            var maskVideoPath = Path.Combine(tempDirectory, "preview-mask.mp4");
             var outputVideoPath = Path.Combine(tempDirectory, "preview-output.mp4");
             BuildPreviewVideo(samples, inputVideoPath);
 
-            status?.Report("Running preview on the sample set...");
+            status?.Report("Generating stable mask preview...");
             await _processingService.ProcessAsync(
                 inputVideoPath,
-                outputVideoPath,
+                maskVideoPath,
                 BuildPreviewTracks(),
                 renderMaskOnly: true,
                 progress: null,
                 status,
                 cancellationToken);
 
-            var outputCropPaths = ExtractPreviewCrops(outputVideoPath, tempDirectory, samples.Count);
-            return new PreviewRenderResult(tempDirectory, outputCropPaths);
+            status?.Report("Generating inpaint preview...");
+            await _processingService.ProcessAsync(
+                inputVideoPath,
+                outputVideoPath,
+                BuildPreviewTracks(),
+                renderMaskOnly: false,
+                progress: null,
+                status,
+                cancellationToken);
+
+            var maskCropPaths = ExtractPreviewCrops(maskVideoPath, tempDirectory, "mask", samples.Count);
+            var outputCropPaths = ExtractPreviewCrops(outputVideoPath, tempDirectory, "output", samples.Count);
+            return new PreviewRenderResult(tempDirectory, maskCropPaths, outputCropPaths);
         }
         catch
         {
@@ -116,12 +128,12 @@ public sealed class InpaintCoveragePreviewService
         return [track];
     }
 
-    private static IReadOnlyList<string> ExtractPreviewCrops(string outputVideoPath, string tempDirectory, int expectedFrameCount)
+    private static IReadOnlyList<string> ExtractPreviewCrops(string videoPath, string tempDirectory, string prefix, int expectedFrameCount)
     {
-        using var capture = new VideoCapture(outputVideoPath);
+        using var capture = new VideoCapture(videoPath);
         if (!capture.IsOpened())
         {
-            throw new InvalidOperationException($"Failed to open preview output video: {outputVideoPath}");
+            throw new InvalidOperationException($"Failed to open preview video: {videoPath}");
         }
 
         var outputPaths = new List<string>(expectedFrameCount);
@@ -130,13 +142,13 @@ public sealed class InpaintCoveragePreviewService
             using var frame = new Mat();
             if (!capture.Read(frame) || frame.Empty())
             {
-                throw new InvalidOperationException($"Failed to read preview output frame {frameIndex}.");
+                throw new InvalidOperationException($"Failed to read preview frame {frameIndex} from {videoPath}.");
             }
 
             var cropRect = BuildClampedCropRect(frame.Width, frame.Height);
             using var crop = new Mat(frame, cropRect);
 
-            var outputPath = Path.Combine(tempDirectory, $"preview-crop-{frameIndex}.png");
+            var outputPath = Path.Combine(tempDirectory, $"preview-crop-{prefix}-{frameIndex}.png");
             Cv2.ImWrite(outputPath, crop);
             outputPaths.Add(outputPath);
         }
