@@ -17,13 +17,13 @@ public sealed class InpaintCoverageSettingsService
 
     private static readonly SettingDefinition[] Definitions =
     [
-        new("mask_min_whiteness", "Stable Mask", "Min Whiteness", "Lower = dimmer white-ish watermark pixels can enter the stable mask.", 0.46, false),
+        new("mask_min_whiteness", "Stable Mask", "Min Whiteness", "Lower = dimmer white-ish watermark pixels can enter the stable mask.", 0.43, false),
         new("mask_min_luminance", "Stable Mask", "Min Luminance", "Lower = darker but still bright pixels can enter the stable mask.", 0.50, false),
         new("stable_frame_delta_threshold", "Stable Mask", "Delta Threshold", "Frames above this average luminance delta are treated as outliers for mask building.", 0.12, false),
         new("stable_frame_keep_ratio", "Stable Mask", "Keep Ratio", "If too few frames survive the delta threshold, keep at least this fraction of the calmest ones.", 0.45, false),
         new("stable_mask_presence_ratio", "Stable Mask", "Presence Ratio", "Lower = a pixel only needs to appear in fewer stable frames to make the final segment mask.", 0.35, false),
         new("mask_close_radius", "Stable Mask", "Join Radius", "Morphological close radius to connect tiny gaps inside the stable mask.", 2, true),
-        new("mask_expand_radius", "Stable Mask", "Expand Pixels", "Expand the final stable mask by this many pixels before inpaint.", 6, true),
+        new("mask_expand_radius", "Stable Mask", "Expand Pixels", "Expand the final stable mask by this many pixels before inpaint.", 4, true),
         new("mask_min_component_area", "Stable Mask", "Min Component Area", "Remove tiny islands smaller than this many pixels.", 24, true),
         new("temporal_blend_enabled", "Temporal Blend", "Enable Blend", "1 = blend each segment forward from start using frame (start-1) as anchor; 0 = disable.", 1, true),
         new("temporal_blend_edge_strength", "Temporal Blend", "Start Strength", "Blend weight at the segment start (0..1). Higher values smooth flicker but can pull more source texture.", 0.26, false),
@@ -37,24 +37,37 @@ public sealed class InpaintCoverageSettingsService
         WriteIndented = true,
     };
 
-    public InpaintCoverageSettingsService()
+    public InpaintCoverageSettingsService(string? baseDirectory = null)
     {
-        _dataDirectory = Path.Combine(AppContext.BaseDirectory, "Data");
+        var resolvedBaseDirectory = string.IsNullOrWhiteSpace(baseDirectory)
+            ? AppContext.BaseDirectory
+            : baseDirectory;
+
+        _dataDirectory = Path.Combine(resolvedBaseDirectory, "Data");
         _settingsPath = Path.Combine(_dataDirectory, "lama-coverage-config.json");
     }
 
     public string SettingsPath => _settingsPath;
 
-    public async Task<IReadOnlyList<InpaintCoverageSettingEntry>> LoadEntriesAsync()
+    public void EnsureSettingsFileExists()
     {
-        Dictionary<string, JsonElement>? storedValues = null;
         Directory.CreateDirectory(_dataDirectory);
-
         if (File.Exists(_settingsPath))
         {
-            await using var stream = File.OpenRead(_settingsPath);
-            storedValues = await JsonSerializer.DeserializeAsync<Dictionary<string, JsonElement>>(stream, _jsonOptions);
+            return;
         }
+
+        using var stream = File.Create(_settingsPath);
+        JsonSerializer.Serialize(stream, BuildDefaultPayload(), _jsonOptions);
+    }
+
+    public async Task<IReadOnlyList<InpaintCoverageSettingEntry>> LoadEntriesAsync()
+    {
+        EnsureSettingsFileExists();
+
+        Dictionary<string, JsonElement>? storedValues = null;
+        await using var stream = File.OpenRead(_settingsPath);
+        storedValues = await JsonSerializer.DeserializeAsync<Dictionary<string, JsonElement>>(stream, _jsonOptions);
 
         var entries = new List<InpaintCoverageSettingEntry>(Definitions.Length);
         foreach (var definition in Definitions)
@@ -146,5 +159,16 @@ public sealed class InpaintCoverageSettingsService
             double doubleValue when !isInteger => doubleValue.ToString("0.###", CultureInfo.InvariantCulture),
             _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
         };
+    }
+
+    private static Dictionary<string, object> BuildDefaultPayload()
+    {
+        var payload = new Dictionary<string, object>(Definitions.Length, StringComparer.Ordinal);
+        foreach (var definition in Definitions)
+        {
+            payload[definition.Key] = definition.DefaultValue;
+        }
+
+        return payload;
     }
 }

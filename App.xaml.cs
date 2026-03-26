@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
+using TrackBoxStudio.Services;
 
 namespace TrackBoxStudio;
 
@@ -10,10 +11,28 @@ namespace TrackBoxStudio;
 /// </summary>
 public partial class App : Application
 {
+    private readonly InpaintCoverageSettingsService _coverageSettingsService = new();
+
     public App()
     {
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+    }
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        try
+        {
+            _coverageSettingsService.EnsureSettingsFileExists();
+        }
+        catch (Exception ex)
+        {
+            ShowFatalError(ex);
+            Shutdown(-1);
+            return;
+        }
+
+        base.OnStartup(e);
     }
 
     public static void LogError(Exception ex, string category = "Error")

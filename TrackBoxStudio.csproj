@@ -21,12 +21,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Data\lama-coverage-config.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
-  <ItemGroup>
     <Content Include="Scripts\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
