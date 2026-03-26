@@ -164,7 +164,7 @@
                                    Foreground="White"
                                    FontSize="18"
                                    FontWeight="Bold" />
-                        <TextBlock Text="These are the original box crops from the sample clip."
+                        <TextBlock Text="Before Try these are the original box crops. After Try the stable mask is tinted over them so you can inspect coverage."
                                    Foreground="#8B93A7"
                                    Margin="0,6,0,0"
                                    TextWrapping="Wrap" />
@@ -202,7 +202,7 @@
                                        Foreground="White"
                                        FontSize="18"
                                        FontWeight="Bold" />
-                            <TextBlock Text="Try saves the current JSON, builds one stable watermark mask for the sample range, runs inpaint on full frames, then crops the output back to your box."
+                            <TextBlock Text="Try saves the current JSON, renders the stable mask as an overlay on the sample boxes, then runs inpaint on full frames and crops the result back to your box."
                                        Foreground="#8B93A7"
                                        Margin="0,6,0,0"
                                        TextWrapping="Wrap" />
