@@ -22,7 +22,7 @@ public sealed class InpaintCoverageSettingsServiceTests : IDisposable
         var payload = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(service.SettingsPath));
         Assert.NotNull(payload);
         Assert.Equal(0.43, payload["mask_min_whiteness"].GetDouble(), 3);
-        Assert.Equal(4, payload["mask_expand_radius"].GetInt32());
+        Assert.Equal(6, payload["mask_expand_radius"].GetInt32());
         Assert.Equal(1, payload["temporal_blend_enabled"].GetInt32());
         Assert.Equal(0.26, payload["temporal_blend_edge_strength"].GetDouble(), 3);
         Assert.Equal(1.35, payload["temporal_blend_falloff_power"].GetDouble(), 3);
@@ -37,7 +37,7 @@ public sealed class InpaintCoverageSettingsServiceTests : IDisposable
         var entries = await service.LoadEntriesAsync();
 
         Assert.Contains(entries, entry => entry.Key == "mask_min_whiteness" && entry.ValueText == "0.43");
-        Assert.Contains(entries, entry => entry.Key == "mask_expand_radius" && entry.ValueText == "4");
+        Assert.Contains(entries, entry => entry.Key == "mask_expand_radius" && entry.ValueText == "6");
         Assert.Contains(entries, entry => entry.Key == "temporal_blend_enabled" && entry.ValueText == "1");
     }
 

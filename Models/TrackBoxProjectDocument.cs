@@ -59,9 +59,11 @@ public sealed class ProjectTrackDocument
 
     public string Name { get; set; } = string.Empty;
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? WatermarkId { get; set; }
 
-    public string WatermarkName { get; set; } = "Unassigned";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WatermarkName { get; set; }
 
     public string ColorHex { get; set; } = "#4ADE80";
 

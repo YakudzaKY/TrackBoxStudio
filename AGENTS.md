@@ -21,12 +21,11 @@ This repo is meant to stay simple, local-first, and editor-driven.
 ## Primary user workflow
 
 1. Open a video or image.
-2. Create or choose a named watermark from the registry.
-3. Add one or more tracks.
-4. Draw a box on a frame.
-5. Save an enabled keyframe or write a disabled keyframe.
-6. Save the session as a `.trackbox.json` project.
-7. Run processing to inpaint enabled boxes.
+2. Add one or more tracks.
+3. Draw a box on a frame.
+4. Save an enabled keyframe or write a disabled keyframe.
+5. Save the session as a `.trackbox.json` project.
+6. Run processing to inpaint enabled boxes.
 
 ## Repo map
 
@@ -51,7 +50,6 @@ This repo is meant to stay simple, local-first, and editor-driven.
   - `MediaDocumentService.cs`: media open/reset/frame extraction
   - `InpaintProcessingService.cs`: launches the Python LaMa backend and translates progress/status back into the app
   - `ProjectPersistenceService.cs`: save/load `.trackbox.json`
-  - `WatermarkRegistryService.cs`: save/load named watermark registry in `Data/`
   - `BitmapSourceFactory.cs`: OpenCV to WPF bitmap conversion
 
 - `Scripts/`
@@ -60,14 +58,14 @@ This repo is meant to stay simple, local-first, and editor-driven.
   - `lama_inpaint_runner.py`: real LaMa processing backend for manual timeline jobs
 
 - `Dialogs/`
-  Small reusable modal dialogs like text prompts for naming watermarks.
+  Small reusable modal dialogs such as inpaint tuning windows.
 
 - `Infrastructure/`
   Generic support code such as `BindableBase`.
 
 - `Data/`
   App-local data stored next to the executable and repo.
-  Right now this mainly contains `watermark-registry.json`.
+  Right now this mainly contains `lama-coverage-config.json`.
 
 - `README.md`
   User-facing overview and usage notes.
@@ -137,17 +135,11 @@ Important:
 - `TimelineTrack.RebuildSegments(...)` drives the on/off preview shown in the UI
 - if keyframe logic changes, refresh segment rebuilding and overlay refresh paths together
 
-### If you want to change the watermark registry
-
-Start with:
-- `Models/WatermarkDefinition.cs`
-- `Services/WatermarkRegistryService.cs`
-- `MainWindow.xaml.cs`
-
 ## Editing notes
 
 - The app is intentionally manual-first. Do not make auto-detection a hard dependency.
 - Keep project save/load stable. Future ML work is expected, so prefer additive schema changes.
+- Legacy watermark fields may still appear in older `.trackbox.json` files. Load them defensively, but do not reintroduce registry-driven UI flow.
 - The `learning` block in project JSON is only a placeholder right now. Do not pretend training exists unless it is actually implemented.
 - Final cleanup quality now depends on the Python LaMa sidecar. If processing quality changes, inspect both the C# launcher and `Scripts/lama_inpaint_runner.py`.
 - Default device policy is `cuda-preferred`: prefer GPU when CUDA is available, otherwise fall back to CPU.

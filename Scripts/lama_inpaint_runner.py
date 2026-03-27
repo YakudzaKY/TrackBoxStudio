@@ -67,7 +67,7 @@ DEFAULT_COVERAGE_CONFIG = {
     # Morphological close to connect tiny gaps inside the stable mask.
     "mask_close_radius": 2,
     # Expand the final stable mask by this many pixels before inpaint.
-    "mask_expand_radius": 4,
+    "mask_expand_radius": 6,
     # Remove very tiny islands before and after expansion.
     "mask_min_component_area": 24,
     # 0 disables temporal cross-frame blend; 1 enables forward blend from segment start.

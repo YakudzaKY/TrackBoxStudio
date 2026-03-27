@@ -8,8 +8,6 @@ public sealed class TimelineTrack : BindableBase
 {
     private string _id = Guid.NewGuid().ToString("N");
     private string _name = string.Empty;
-    private string? _watermarkId;
-    private string _watermarkName = "Unassigned";
     private string _colorHex = "#4ADE80";
 
     public TimelineTrack()
@@ -35,24 +33,6 @@ public sealed class TimelineTrack : BindableBase
         }
     }
 
-    public string? WatermarkId
-    {
-        get => _watermarkId;
-        set => SetProperty(ref _watermarkId, value);
-    }
-
-    public string WatermarkName
-    {
-        get => _watermarkName;
-        set
-        {
-            if (SetProperty(ref _watermarkName, value))
-            {
-                OnPropertyChanged(nameof(DisplayName));
-            }
-        }
-    }
-
     public string ColorHex
     {
         get => _colorHex;
@@ -69,7 +49,7 @@ public sealed class TimelineTrack : BindableBase
 
     public ObservableCollection<TrackSegmentPreview> Segments { get; } = [];
 
-    public string DisplayName => $"{Name} - {WatermarkName}";
+    public string DisplayName => Name;
 
     public Brush TrackBrush => (SolidColorBrush)new BrushConverter().ConvertFromString(ColorHex)!;
 

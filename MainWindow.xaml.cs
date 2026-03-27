@@ -20,7 +20,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int MinimumBoxSize = 2;
     private const double ResizeGripSize = 10;
 
-    private readonly WatermarkRegistryService _registryService = new();
     private readonly MediaDocumentService _mediaService = new();
     private readonly InpaintProcessingService _processingService = new();
     private readonly InpaintCoverageSettingsService _coverageSettingsService = new();
@@ -36,7 +35,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         "#FB7185",
     ];
 
-    private WatermarkDefinition? _selectedWatermarkDefinition;
     private TimelineTrack? _selectedTrack;
     private BitmapSource? _currentFrameImage;
     private string _inputPath = string.Empty;
@@ -87,7 +85,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         InitializeComponent();
         DataContext = this;
 
-        WatermarkRegistry = [];
         Tracks = [];
         OverlayBoxes = [];
 
@@ -111,17 +108,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public ObservableCollection<WatermarkDefinition> WatermarkRegistry { get; }
-
     public ObservableCollection<TimelineTrack> Tracks { get; }
 
     public ObservableCollection<OverlayBox> OverlayBoxes { get; }
-
-    public WatermarkDefinition? SelectedWatermarkDefinition
-    {
-        get => _selectedWatermarkDefinition;
-        set => SetProperty(ref _selectedWatermarkDefinition, value);
-    }
 
     public TimelineTrack? SelectedTrack
     {
@@ -381,17 +370,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         : "Enable Here";
 
     public string SelectedTrackKeyframeStatus => SelectedTrack is null
-        ? "No track selected."
-        : $"{SelectedTrack.Keyframes.Count} keyframes. Red segments on the track mean the watermark is disabled there.";
+        ? "Select a track. Left click a segment to jump to its start."
+        : $"{SelectedTrack.Keyframes.Count} keyframes. Left click a segment to jump; right click it to remove the starting keyframe.";
 
     public string ProgressDisplay => $"{ProgressValue:0}%";
-
-    public string RegistryLocation => $"Registry file: {_registryService.RegistryPath}";
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         await LoadProcessingPreferencesAsync();
-        await LoadWatermarkRegistryAsync();
     }
 
     private async Task LoadProcessingPreferencesAsync()
@@ -423,19 +409,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             App.LogError(ex, "Processing Preferences Save Error");
             StatusText = $"Could not save audio preference: {ex.Message}";
         }
-    }
-
-    private async Task LoadWatermarkRegistryAsync()
-    {
-        WatermarkRegistry.Clear();
-        foreach (var definition in await _registryService.LoadAsync())
-        {
-            WatermarkRegistry.Add(definition);
-        }
-
-        StatusText = WatermarkRegistry.Count == 0
-            ? "Registry is empty. Create your first named watermark."
-            : $"Loaded {WatermarkRegistry.Count} named watermark definitions.";
     }
 
     private async void OpenInput_Click(object sender, RoutedEventArgs e)
@@ -596,81 +569,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ShowDialog();
     }
 
-    private async void AddWatermark_Click(object sender, RoutedEventArgs e)
-    {
-        await CreateWatermarkAsync();
-    }
-
-    private async void RenameWatermark_Click(object sender, RoutedEventArgs e)
-    {
-        if (SelectedWatermarkDefinition is null)
-        {
-            return;
-        }
-
-        var prompt = new TextPromptWindow("Rename Watermark", "Enter a new name for the watermark.", SelectedWatermarkDefinition.Name)
-        {
-            Owner = this,
-        };
-        if (prompt.ShowDialog() != true)
-        {
-            return;
-        }
-
-        var name = prompt.ResponseText;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return;
-        }
-
-        SelectedWatermarkDefinition.Name = name;
-        RefreshTrackWatermarkNames();
-        await _registryService.SaveAsync(WatermarkRegistry);
-        StatusText = $"Renamed watermark to '{name}'.";
-    }
-
-    private async void DeleteWatermark_Click(object sender, RoutedEventArgs e)
-    {
-        if (SelectedWatermarkDefinition is null)
-        {
-            return;
-        }
-
-        if (Tracks.Any(track => track.WatermarkId == SelectedWatermarkDefinition.Id))
-        {
-            MessageBox.Show(this, "This watermark is currently used by one or more tracks. Reassign or remove those tracks first.", "Watermark in use", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var removedName = SelectedWatermarkDefinition.Name;
-        WatermarkRegistry.Remove(SelectedWatermarkDefinition);
-        SelectedWatermarkDefinition = WatermarkRegistry.FirstOrDefault();
-        await _registryService.SaveAsync(WatermarkRegistry);
-        StatusText = $"Deleted watermark '{removedName}'.";
-    }
-
-    private async void AddTrack_Click(object sender, RoutedEventArgs e)
+    private void AddTrack_Click(object sender, RoutedEventArgs e)
     {
         if (!IsMediaLoaded)
         {
             return;
         }
 
-        var watermark = SelectedWatermarkDefinition ?? WatermarkRegistry.FirstOrDefault();
-        if (watermark is null)
-        {
-            watermark = await CreateWatermarkAsync();
-            if (watermark is null)
-            {
-                return;
-            }
-        }
-
         var track = new TimelineTrack
         {
             Name = $"Track {Tracks.Count + 1}",
-            WatermarkId = watermark.Id,
-            WatermarkName = watermark.Name,
             ColorHex = _trackColors[Tracks.Count % _trackColors.Length],
         };
 
@@ -696,41 +604,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RebuildOverlayBoxes();
         OnPropertyChanged(nameof(CanProcess));
         StatusText = $"Removed {track.Name}.";
-    }
-
-    private async void CreateWatermarkForTrack_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not FrameworkElement { Tag: TimelineTrack track })
-        {
-            return;
-        }
-
-        var watermark = await CreateWatermarkAsync();
-        if (watermark is null)
-        {
-            return;
-        }
-
-        track.WatermarkId = watermark.Id;
-        track.WatermarkName = watermark.Name;
-        OnPropertyChanged(nameof(SelectedTrackStatus));
-        StatusText = $"Assigned '{watermark.Name}' to {track.Name}.";
-    }
-
-    private void TrackWatermarkSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.ComboBox { DataContext: TimelineTrack track })
-        {
-            return;
-        }
-
-        var definition = WatermarkRegistry.FirstOrDefault(item => item.Id == track.WatermarkId);
-        track.WatermarkName = definition?.Name ?? "Unassigned";
-        if (ReferenceEquals(track, SelectedTrack))
-        {
-            OnPropertyChanged(nameof(SelectedTrackStatus));
-        }
-        StatusText = $"{track.Name} now points to {track.WatermarkName}.";
     }
 
     private void FrameSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -957,33 +830,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 : $"Removed the active keyframe at frame {keyframe.Frame} while viewing frame {CurrentFrameIndex}.");
     }
 
-    private async void JumpToKeyframe_Click(object sender, RoutedEventArgs e)
+    private async void TrackSegmentBorder_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not FrameworkElement { Tag: BoxKeyframe keyframe })
+        if (sender is not Border { DataContext: TrackSegmentPreview segment, Tag: TimelineTrack track })
         {
             return;
         }
 
-        try
-        {
-            CurrentFrameIndex = keyframe.Frame;
-            FrameSlider.Value = keyframe.Frame;
-            await LoadFrameAsync(keyframe.Frame);
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Frame load failed: {ex.Message}";
-        }
-    }
-
-    private void DeleteKeyframe_Click(object sender, RoutedEventArgs e)
-    {
-        if (SelectedTrack is null || sender is not FrameworkElement { Tag: BoxKeyframe keyframe })
-        {
-            return;
-        }
-
-        RemoveKeyframeFromTrack(SelectedTrack, keyframe.Frame, $"Deleted keyframe at frame {keyframe.Frame}.");
+        SelectedTrack = track;
+        await JumpToFrameAsync(segment.StartFrame);
+        e.Handled = true;
     }
 
     private void TrackSegmentBorder_ContextMenuOpening(object sender, ContextMenuEventArgs e)
@@ -1020,6 +876,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             context.Track,
             context.Segment.StartFrame,
             $"Removed the keyframe at frame {context.Segment.StartFrame} from {context.Track.Name}.");
+    }
+
+    private async Task JumpToFrameAsync(int frameIndex)
+    {
+        try
+        {
+            CurrentFrameIndex = frameIndex;
+            FrameSlider.Value = frameIndex;
+            await LoadFrameAsync(frameIndex);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Frame load failed: {ex.Message}";
+        }
     }
 
     private async void Process_Click(object sender, RoutedEventArgs e)
@@ -1074,42 +944,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task<WatermarkDefinition?> CreateWatermarkAsync()
-    {
-        var prompt = new TextPromptWindow("New Watermark", "Enter a name for the reusable watermark definition.")
-        {
-            Owner = this,
-        };
-        if (prompt.ShowDialog() != true)
-        {
-            return null;
-        }
-
-        var name = prompt.ResponseText;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return null;
-        }
-
-        var existing = WatermarkRegistry.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (existing is not null)
-        {
-            SelectedWatermarkDefinition = existing;
-            StatusText = $"Watermark '{name}' already exists.";
-            return existing;
-        }
-
-        var definition = new WatermarkDefinition
-        {
-            Name = name,
-        };
-        WatermarkRegistry.Add(definition);
-        SelectedWatermarkDefinition = definition;
-        await _registryService.SaveAsync(WatermarkRegistry);
-        StatusText = $"Created watermark '{name}'.";
-        return definition;
-    }
-
     private void RefreshTrackAfterEdit(TimelineTrack track, string statusMessage)
     {
         track.RebuildSegments(TotalFrames);
@@ -1122,16 +956,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedTrackStatus));
         OnPropertyChanged(nameof(SelectedTrackKeyframeStatus));
         StatusText = statusMessage;
-    }
-
-    private void RefreshTrackWatermarkNames()
-    {
-        foreach (var track in Tracks)
-        {
-            var definition = WatermarkRegistry.FirstOrDefault(item => item.Id == track.WatermarkId);
-            track.WatermarkName = definition?.Name ?? "Unassigned";
-        }
-        OnPropertyChanged(nameof(SelectedTrackStatus));
     }
 
     private void SyncDraftBoxFromSelectedTrack()
@@ -1157,12 +981,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (IsSelectedTrackEnabledAtCurrentFrame())
         {
-            return $"Selected: {SelectedTrack.DisplayName}. This watermark is enabled on frame {CurrentFrameIndex}. Drag inside the box to move it, drag an edge to resize it, or disable it from this frame.";
+            return $"Selected: {SelectedTrack.DisplayName}. This track is enabled on frame {CurrentFrameIndex}. Drag inside the box to move it, drag an edge to resize it, or disable it from this frame.";
         }
 
         return HasBoxToEnableHere()
-            ? $"Selected: {SelectedTrack.DisplayName}. This watermark is disabled on frame {CurrentFrameIndex}. Draw a new box or click Enable Here to restore the last enabled box."
-            : $"Selected: {SelectedTrack.DisplayName}. This watermark is disabled on frame {CurrentFrameIndex}. Draw a box on this frame to enable it here.";
+            ? $"Selected: {SelectedTrack.DisplayName}. This track is disabled on frame {CurrentFrameIndex}. Draw a new box or click Enable Here to restore the last enabled box."
+            : $"Selected: {SelectedTrack.DisplayName}. This track is disabled on frame {CurrentFrameIndex}. Draw a box on this frame to enable it here.";
     }
 
     private bool IsSelectedTrackEnabledAtCurrentFrame()
@@ -1282,8 +1106,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 Id = track.Id,
                 Name = track.Name,
-                WatermarkId = track.WatermarkId,
-                WatermarkName = track.WatermarkName,
                 ColorHex = track.ColorHex,
             };
 
@@ -1444,8 +1266,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             Id = track.Id,
             Name = track.Name,
-            WatermarkId = track.WatermarkId,
-            WatermarkName = track.WatermarkName,
             ColorHex = track.ColorHex,
             Keyframes = track
                 .OrderedKeyframes()
@@ -1464,9 +1284,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var track = new TimelineTrack
         {
             Id = string.IsNullOrWhiteSpace(trackDocument.Id) ? Guid.NewGuid().ToString("N") : trackDocument.Id,
-            Name = trackDocument.Name,
-            WatermarkId = trackDocument.WatermarkId,
-            WatermarkName = string.IsNullOrWhiteSpace(trackDocument.WatermarkName) ? "Unassigned" : trackDocument.WatermarkName,
+            Name = string.IsNullOrWhiteSpace(trackDocument.Name)
+                ? string.IsNullOrWhiteSpace(trackDocument.WatermarkName) ? "Imported Track" : trackDocument.WatermarkName
+                : trackDocument.Name,
             ColorHex = string.IsNullOrWhiteSpace(trackDocument.ColorHex) ? "#4ADE80" : trackDocument.ColorHex,
         };
 

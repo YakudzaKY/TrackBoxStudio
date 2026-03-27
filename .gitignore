@@ -8,6 +8,5 @@ obj/
 *.cache
 *.log
 /Data/lama-coverage-config.json
-/Data/watermark-registry.json
 
 /*.lnk

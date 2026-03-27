@@ -116,7 +116,6 @@ public sealed class InpaintCoveragePreviewService
         var track = new TimelineTrack
         {
             Name = "Preview Track",
-            WatermarkName = "Preview Watermark",
             ColorHex = "#38BDF8",
         };
 
