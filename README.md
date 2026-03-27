@@ -1,18 +1,20 @@
 # TrackBoxStudio
 
-TrackBoxStudio is a fresh C# / WPF desktop app for manual watermark cleanup.
+TrackBoxStudio is a standalone C# / WPF desktop app for manual watermark cleanup.
 
-The project is built around one idea: stop trusting weak auto-detection, and let the editor drive everything.
+The project is manual-first: the editor is the source of truth, auto-detection is not required, and only user-authored boxes are processed.
 
 ## What it does
 
 - Opens a video or image file
 - Lets you create one or more timeline tracks
-- Lets you draw a box on a frame and save it as a keyframe
-- Lets you disable a track on any frame by writing an "off" keyframe
+- Lets you draw a box on a frame and save it as an enabled keyframe
+- Lets you write a disabled keyframe when the watermark disappears
 - Shows enabled and disabled ranges directly on each track
 - Saves and reopens full timeline sessions as `.trackbox.json` project files
-- Processes the file by running real LaMa inpainting only on the boxes that are enabled on the active frame
+- Runs real LaMa inpainting only on the boxes that are enabled on the active frame
+- Can preserve video audio on export when `ffmpeg.exe` is available in `PATH`
+- Includes stable-mask tuning and preview tools for local inpaint coverage checks
 
 ## Current stack
 
@@ -25,12 +27,18 @@ The project is built around one idea: stop trusting weak auto-detection, and let
 
 - `MainWindow.xaml` and `MainWindow.xaml.cs`: main editor UI and interaction flow
 - `Models/`: track, keyframe, project, and overlay models
-- `Services/`: media loading, bitmap conversion, and processing
+- `Services/`: media loading, bitmap conversion, project persistence, and processing
 - `Scripts/lama_inpaint_runner.py`: manual-timeline LaMa backend used for final processing
 - `Dialogs/`: tuning and helper dialogs
+- `Data/lama-coverage-config.json`: user-local stable-mask and export preferences
 - `*.trackbox.json`: reusable project files with media paths, tracks, keyframes, and future learning metadata
 
 ## How to run
+
+Requirements:
+
+- .NET 10 SDK
+- A compatible Python environment for `iopaint` / LaMa processing
 
 ```powershell
 dotnet build
@@ -39,7 +47,7 @@ dotnet run
 
 ## Workflow
 
-1. Open a video.
+1. Open a video or image.
 2. Add one or more tracks.
 3. Select a track.
 4. Move along the timeline.
@@ -47,7 +55,20 @@ dotnet run
 6. Save a keyframe.
 7. Add "Disable Here" keyframes where the watermark disappears.
 8. Save the session as a `.trackbox.json` project whenever you want to come back later.
-9. Start processing.
+9. Optionally review the mask / coverage tuning.
+10. Start processing.
+
+## Python runtime lookup
+
+TrackBoxStudio resolves the LaMa Python runtime in this order:
+
+1. `TRACKBOX_PYTHON_EXE`
+2. `LAMA_PYTHON_EXE`
+3. `python\python.exe` next to the built app
+4. `python\python.exe` in the repo root when running from source
+5. `..\Lama\python\python.exe` as a sibling development checkout when running from source
+
+The last entry is a development convenience fallback, not a required install location. It is resolved relative to the repo location at runtime, so logs or exceptions may show it as an absolute path on the current machine.
 
 ## Notes
 
@@ -58,7 +79,7 @@ dotnet run
 - If `ffmpeg.exe` is available in `PATH` and `Keep Audio` is enabled, TrackBoxStudio will try to preserve audio when exporting video.
 - If `ffmpeg.exe` is not available, the processed video is still exported, but audio may be dropped.
 - Project files already contain a small `learning` block reserved for future ML-assisted workflows, but no training code is enabled in the current build.
-- Final inpainting quality depends on a compatible LaMa Python environment. By default the app looks for `TRACKBOX_PYTHON_EXE`, then a bundled `python\python.exe`, then the sibling dev environment at `D:\git\Lama\python\python.exe`.
+- Final inpainting quality depends on a compatible LaMa Python environment. See the lookup order above for how the app resolves `python.exe`.
 - Device selection is `CUDA preferred` by default: on systems with working CUDA it will load LaMa on GPU, and only fall back to CPU if CUDA is unavailable.
 - The current default processing profile is `Max Quality`: 100 LaMa steps, larger crop margin, higher resize limit, and a small mask padding around the user box.
 
