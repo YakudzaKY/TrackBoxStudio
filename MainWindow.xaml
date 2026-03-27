@@ -114,10 +114,69 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="0">
-                        <TextBlock Text="Frame Preview" Foreground="White" FontSize="18" FontWeight="Bold" />
-                        <TextBlock Text="{Binding SelectedTrackStatus}" Foreground="#8B93A7" Margin="0,6,0,0" TextWrapping="Wrap" />
-                    </StackPanel>
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Frame Preview" Foreground="White" FontSize="18" FontWeight="Bold" />
+                            <TextBlock Text="{Binding SelectedTrackStatus}" Foreground="#8B93A7" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <Border Grid.Column="1"
+                                Background="#10141F"
+                                Padding="8"
+                                Margin="14,0,0,0"
+                                VerticalAlignment="Top">
+                            <Border.Resources>
+                                <Style x:Key="PreviewToolButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Padding" Value="10,6" />
+                                    <Setter Property="Margin" Value="0,0,8,0" />
+                                    <Setter Property="MinWidth" Value="62" />
+                                    <Style.Triggers>
+                                        <Trigger Property="IsEnabled" Value="False">
+                                            <Setter Property="Opacity" Value="0.45" />
+                                            <Setter Property="Background" Value="#2B3040" />
+                                            <Setter Property="BorderBrush" Value="#3C4358" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Resources>
+
+                            <StackPanel Orientation="Horizontal" ToolTip="Ctrl + wheel zooms. Shift + wheel scrolls horizontally.">
+                                <Button Content="Zoom -"
+                                        Style="{StaticResource PreviewToolButtonStyle}"
+                                        Click="ZoomOutPreview_Click"
+                                        IsEnabled="{Binding CanZoomOutPreview}" />
+                                <Button Content="Zoom +"
+                                        Style="{StaticResource PreviewToolButtonStyle}"
+                                        Click="ZoomInPreview_Click"
+                                        IsEnabled="{Binding CanZoomInPreview}" />
+                                <Button Content="100%"
+                                        Style="{StaticResource PreviewToolButtonStyle}"
+                                        Click="ResetPreviewZoom_Click"
+                                        IsEnabled="{Binding CanResetPreviewZoom}" />
+                                <Button Content="Fit"
+                                        Style="{StaticResource PreviewToolButtonStyle}"
+                                        Margin="0"
+                                        Click="FitPreview_Click"
+                                        IsEnabled="{Binding CanFitPreview}" />
+                                <Border Background="#0B0F18"
+                                        BorderBrush="#31384C"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Padding="10,6"
+                                        Margin="10,0,0,0"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding PreviewZoomDisplay}"
+                                               Foreground="#D9E1F2"
+                                               FontWeight="SemiBold" />
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
 
                     <Border Grid.Row="1" Background="#080B11" Margin="0,14,0,0" Padding="10">
                         <Grid>
@@ -138,45 +197,60 @@
                                 </TextBlock.Style>
                             </TextBlock>
 
-                            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                                <Viewbox Stretch="Uniform">
-                                    <Grid Width="{Binding FrameCanvasWidth}" Height="{Binding FrameCanvasHeight}">
-                                        <Image Source="{Binding CurrentFrameImage}" Stretch="Fill" />
-                                        <ItemsControl ItemsSource="{Binding OverlayBoxes}" IsHitTestVisible="False">
-                                            <ItemsControl.ItemsPanel>
-                                                <ItemsPanelTemplate>
-                                                    <Canvas />
-                                                </ItemsPanelTemplate>
-                                            </ItemsControl.ItemsPanel>
-                                            <ItemsControl.ItemContainerStyle>
-                                                <Style TargetType="ContentPresenter">
-                                                    <Setter Property="Canvas.Left" Value="{Binding X}" />
-                                                    <Setter Property="Canvas.Top" Value="{Binding Y}" />
-                                                </Style>
-                                            </ItemsControl.ItemContainerStyle>
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate DataType="{x:Type models:OverlayBox}">
-                                                    <Grid>
-                                                        <Rectangle Width="{Binding Width}"
-                                                                   Height="{Binding Height}"
-                                                                   Stroke="{Binding Stroke}"
-                                                                   Fill="{Binding Fill}"
-                                                                   StrokeThickness="{Binding StrokeThickness}" />
-                                                        <Border Background="{Binding LabelBackground}" Padding="5,2" Margin="2">
-                                                            <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11" FontWeight="SemiBold" />
-                                                        </Border>
-                                                    </Grid>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                        <Canvas x:Name="OverlayInputCanvas"
-                                                Background="Transparent"
-                                                MouseLeftButtonDown="OverlayInputCanvas_MouseLeftButtonDown"
-                                                MouseMove="OverlayInputCanvas_MouseMove"
-                                                MouseLeftButtonUp="OverlayInputCanvas_MouseLeftButtonUp"
-                                                MouseLeave="OverlayInputCanvas_MouseLeave" />
+                            <ScrollViewer x:Name="PreviewScrollViewer"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto"
+                                          PreviewMouseWheel="PreviewScrollViewer_PreviewMouseWheel"
+                                          SizeChanged="PreviewScrollViewer_SizeChanged"
+                                          CanContentScroll="False">
+                                <Grid MinWidth="{Binding ElementName=PreviewScrollViewer, Path=ViewportWidth}"
+                                      MinHeight="{Binding ElementName=PreviewScrollViewer, Path=ViewportHeight}">
+                                    <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <Grid x:Name="PreviewContentGrid"
+                                              Width="{Binding FrameCanvasWidth}"
+                                              Height="{Binding FrameCanvasHeight}">
+                                            <Grid.LayoutTransform>
+                                                <ScaleTransform ScaleX="{Binding PreviewZoomScale}"
+                                                                ScaleY="{Binding PreviewZoomScale}" />
+                                            </Grid.LayoutTransform>
+
+                                            <Image Source="{Binding CurrentFrameImage}" Stretch="Fill" />
+                                            <ItemsControl ItemsSource="{Binding OverlayBoxes}" IsHitTestVisible="False">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <Canvas />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemContainerStyle>
+                                                    <Style TargetType="ContentPresenter">
+                                                        <Setter Property="Canvas.Left" Value="{Binding X}" />
+                                                        <Setter Property="Canvas.Top" Value="{Binding Y}" />
+                                                    </Style>
+                                                </ItemsControl.ItemContainerStyle>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type models:OverlayBox}">
+                                                        <Grid>
+                                                            <Rectangle Width="{Binding Width}"
+                                                                       Height="{Binding Height}"
+                                                                       Stroke="{Binding Stroke}"
+                                                                       Fill="{Binding Fill}"
+                                                                       StrokeThickness="{Binding StrokeThickness}" />
+                                                            <Border Background="{Binding LabelBackground}" Padding="5,2" Margin="2">
+                                                                <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11" FontWeight="SemiBold" />
+                                                            </Border>
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <Canvas x:Name="OverlayInputCanvas"
+                                                    Background="Transparent"
+                                                    MouseLeftButtonDown="OverlayInputCanvas_MouseLeftButtonDown"
+                                                    MouseMove="OverlayInputCanvas_MouseMove"
+                                                    MouseLeftButtonUp="OverlayInputCanvas_MouseLeftButtonUp"
+                                                    MouseLeave="OverlayInputCanvas_MouseLeave" />
+                                        </Grid>
                                     </Grid>
-                                </Viewbox>
+                                </Grid>
                             </ScrollViewer>
                         </Grid>
                     </Border>

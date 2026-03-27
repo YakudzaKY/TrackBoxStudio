@@ -19,6 +19,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private const int MinimumBoxSize = 2;
     private const double ResizeGripSize = 10;
+    private const double PreviewZoomStep = 1.25;
+    private const double DefaultMaximumPreviewZoomScale = 8.0;
+    private const double MinimumPreviewZoomScale = 0.1;
+    private const double ZoomComparisonEpsilon = 0.001;
 
     private readonly MediaDocumentService _mediaService = new();
     private readonly InpaintProcessingService _processingService = new();
@@ -49,6 +53,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isBusy;
     private bool _preserveAudioOnExport = true;
     private double _progressValue;
+    private double _previewZoomScale = 1.0;
     private string _statusText = "Open a file to start a new session.";
     private BoxRect? _draftBox;
     private OverlayInteractionMode _overlayInteractionMode;
@@ -58,6 +63,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _dragStart;
     private int _pendingFrameIndex;
     private int _frameRequestId;
+    private bool _previewFitMode = true;
     private bool _suppressProcessingPreferenceSave;
 
     private enum OverlayInteractionMode
@@ -226,6 +232,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (SetProperty(ref _frameWidth, value))
             {
                 OnPropertyChanged(nameof(FrameCanvasWidth));
+                NotifyPreviewZoomCommandStateChanged();
+                SchedulePreviewFitIfNeeded();
             }
         }
     }
@@ -238,6 +246,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (SetProperty(ref _frameHeight, value))
             {
                 OnPropertyChanged(nameof(FrameCanvasHeight));
+                NotifyPreviewZoomCommandStateChanged();
+                SchedulePreviewFitIfNeeded();
             }
         }
     }
@@ -256,6 +266,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanToggleTrackStateHere));
                 OnPropertyChanged(nameof(CanSaveProject));
                 OnPropertyChanged(nameof(CanPreserveAudio));
+                NotifyPreviewZoomCommandStateChanged();
+                if (value)
+                {
+                    SchedulePreviewFitIfNeeded();
+                }
             }
         }
     }
@@ -298,6 +313,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (SetProperty(ref _progressValue, value))
             {
                 OnPropertyChanged(nameof(ProgressDisplay));
+            }
+        }
+    }
+
+    public double PreviewZoomScale
+    {
+        get => _previewZoomScale;
+        private set
+        {
+            if (SetProperty(ref _previewZoomScale, value))
+            {
+                OnPropertyChanged(nameof(PreviewZoomDisplay));
+                NotifyPreviewZoomCommandStateChanged();
             }
         }
     }
@@ -375,9 +403,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public string ProgressDisplay => $"{ProgressValue:0}%";
 
+    public string PreviewZoomDisplay => $"{PreviewZoomScale * 100:0}%";
+
+    public bool CanZoomInPreview => IsMediaLoaded && PreviewZoomScale < GetMaximumAllowedPreviewZoomScale() - ZoomComparisonEpsilon;
+
+    public bool CanZoomOutPreview => IsMediaLoaded && PreviewZoomScale > GetMinimumAllowedPreviewZoomScale() + ZoomComparisonEpsilon;
+
+    public bool CanResetPreviewZoom => IsMediaLoaded && Math.Abs(PreviewZoomScale - 1.0) > ZoomComparisonEpsilon;
+
+    public bool CanFitPreview => IsMediaLoaded;
+
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         await LoadProcessingPreferencesAsync();
+        SchedulePreviewFitIfNeeded();
     }
 
     private async Task LoadProcessingPreferencesAsync()
@@ -436,6 +475,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             FrameHeight = _mediaService.FrameHeight;
             CurrentFrameIndex = 0;
             ProgressValue = 0;
+            ResetPreviewZoomState(fitMode: true);
 
             Tracks.Clear();
             SelectedTrack = null;
@@ -444,6 +484,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             StatusText = $"Loaded {Path.GetFileName(dialog.FileName)}. Build tracks and keyframes next.";
             await LoadFrameAsync(0);
+            SchedulePreviewFitIfNeeded();
             CurrentProjectPath = string.Empty;
         }
         catch (Exception ex)
@@ -657,6 +698,57 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             App.LogError(ex, "Frame Load Error");
             throw;
+        }
+    }
+
+    private void ZoomInPreview_Click(object sender, RoutedEventArgs e)
+    {
+        AdjustPreviewZoom(PreviewZoomStep);
+    }
+
+    private void ZoomOutPreview_Click(object sender, RoutedEventArgs e)
+    {
+        AdjustPreviewZoom(1.0 / PreviewZoomStep);
+    }
+
+    private void ResetPreviewZoom_Click(object sender, RoutedEventArgs e)
+    {
+        SetPreviewZoom(1.0, GetPreviewViewportCenter(), fitMode: false);
+    }
+
+    private void FitPreview_Click(object sender, RoutedEventArgs e)
+    {
+        ApplyFitPreviewZoom();
+    }
+
+    private void PreviewScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (!IsMediaLoaded)
+        {
+            return;
+        }
+
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            var factor = e.Delta > 0 ? PreviewZoomStep : 1.0 / PreviewZoomStep;
+            SetPreviewZoom(PreviewZoomScale * factor, e.GetPosition(PreviewScrollViewer), fitMode: false);
+            e.Handled = true;
+            return;
+        }
+
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            PreviewScrollViewer.ScrollToHorizontalOffset(Math.Max(0, PreviewScrollViewer.HorizontalOffset - e.Delta));
+            e.Handled = true;
+        }
+    }
+
+    private void PreviewScrollViewer_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        NotifyPreviewZoomCommandStateChanged();
+        if (_previewFitMode)
+        {
+            SchedulePreviewFitIfNeeded();
         }
     }
 
@@ -890,6 +982,141 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             StatusText = $"Frame load failed: {ex.Message}";
         }
+    }
+
+    private void AdjustPreviewZoom(double factor)
+    {
+        if (!IsMediaLoaded)
+        {
+            return;
+        }
+
+        SetPreviewZoom(PreviewZoomScale * factor, GetPreviewViewportCenter(), fitMode: false);
+    }
+
+    private void ApplyFitPreviewZoom()
+    {
+        if (!IsMediaLoaded)
+        {
+            return;
+        }
+
+        SetPreviewZoom(GetFitPreviewZoomScale(), GetPreviewViewportCenter(), fitMode: true);
+    }
+
+    private void SchedulePreviewFitIfNeeded()
+    {
+        if (!_previewFitMode || !IsLoaded)
+        {
+            NotifyPreviewZoomCommandStateChanged();
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_previewFitMode && IsMediaLoaded)
+            {
+                ApplyFitPreviewZoom();
+            }
+            else
+            {
+                NotifyPreviewZoomCommandStateChanged();
+            }
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void SetPreviewZoom(double requestedScale, Point viewportAnchor, bool fitMode)
+    {
+        _previewFitMode = fitMode;
+
+        if (!IsMediaLoaded)
+        {
+            PreviewZoomScale = 1.0;
+            return;
+        }
+
+        var oldScale = Math.Max(MinimumPreviewZoomScale, PreviewZoomScale);
+        var newScale = ClampPreviewZoom(requestedScale);
+        if (Math.Abs(newScale - oldScale) < ZoomComparisonEpsilon)
+        {
+            PreviewZoomScale = newScale;
+            return;
+        }
+
+        var contentX = (PreviewScrollViewer.HorizontalOffset + viewportAnchor.X) / oldScale;
+        var contentY = (PreviewScrollViewer.VerticalOffset + viewportAnchor.Y) / oldScale;
+
+        PreviewZoomScale = newScale;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            PreviewScrollViewer.ScrollToHorizontalOffset(Math.Max(0, contentX * newScale - viewportAnchor.X));
+            PreviewScrollViewer.ScrollToVerticalOffset(Math.Max(0, contentY * newScale - viewportAnchor.Y));
+            NotifyPreviewZoomCommandStateChanged();
+        }, DispatcherPriority.Loaded);
+    }
+
+    private double ClampPreviewZoom(double requestedScale)
+    {
+        return Math.Clamp(requestedScale, GetMinimumAllowedPreviewZoomScale(), GetMaximumAllowedPreviewZoomScale());
+    }
+
+    private double GetMinimumAllowedPreviewZoomScale()
+    {
+        return Math.Max(MinimumPreviewZoomScale, Math.Min(1.0, GetFitPreviewZoomScale()));
+    }
+
+    private double GetMaximumAllowedPreviewZoomScale()
+    {
+        return Math.Max(DefaultMaximumPreviewZoomScale, GetFitPreviewZoomScale());
+    }
+
+    private double GetFitPreviewZoomScale()
+    {
+        var frameWidth = FrameCanvasWidth;
+        var frameHeight = FrameCanvasHeight;
+        if (frameWidth <= 0 || frameHeight <= 0)
+        {
+            return 1.0;
+        }
+
+        var viewportWidth = PreviewScrollViewer?.ViewportWidth ?? 0;
+        var viewportHeight = PreviewScrollViewer?.ViewportHeight ?? 0;
+        if (viewportWidth <= 0 || viewportHeight <= 0)
+        {
+            return 1.0;
+        }
+
+        return Math.Max(MinimumPreviewZoomScale, Math.Min(viewportWidth / frameWidth, viewportHeight / frameHeight));
+    }
+
+    private Point GetPreviewViewportCenter()
+    {
+        var viewportWidth = PreviewScrollViewer?.ViewportWidth ?? 0;
+        var viewportHeight = PreviewScrollViewer?.ViewportHeight ?? 0;
+        return viewportWidth > 0 && viewportHeight > 0
+            ? new Point(viewportWidth / 2.0, viewportHeight / 2.0)
+            : new Point(0, 0);
+    }
+
+    private void ResetPreviewZoomState(bool fitMode)
+    {
+        _previewFitMode = fitMode;
+        PreviewZoomScale = 1.0;
+
+        if (PreviewScrollViewer is not null)
+        {
+            PreviewScrollViewer.ScrollToHorizontalOffset(0);
+            PreviewScrollViewer.ScrollToVerticalOffset(0);
+        }
+    }
+
+    private void NotifyPreviewZoomCommandStateChanged()
+    {
+        OnPropertyChanged(nameof(CanZoomInPreview));
+        OnPropertyChanged(nameof(CanZoomOutPreview));
+        OnPropertyChanged(nameof(CanResetPreviewZoom));
+        OnPropertyChanged(nameof(CanFitPreview));
     }
 
     private async void Process_Click(object sender, RoutedEventArgs e)
@@ -1196,6 +1423,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             FrameWidth = _mediaService.FrameWidth;
             FrameHeight = _mediaService.FrameHeight;
             CurrentFrameIndex = Math.Clamp(document.Media.CurrentFrameIndex, 0, Math.Max(0, TotalFrames - 1));
+            ResetPreviewZoomState(fitMode: true);
         }
         else
         {
@@ -1206,6 +1434,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             FrameWidth = document.Media.FrameWidth;
             FrameHeight = document.Media.FrameHeight;
             CurrentFrameIndex = Math.Clamp(document.Media.CurrentFrameIndex, 0, Math.Max(0, TotalFrames - 1));
+            ResetPreviewZoomState(fitMode: true);
         }
 
         OutputPath = !string.IsNullOrWhiteSpace(outputPath)
@@ -1228,6 +1457,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (loadedMedia is not null)
         {
             await LoadFrameAsync(CurrentFrameIndex);
+            SchedulePreviewFitIfNeeded();
             StatusText = $"Loaded project {Path.GetFileName(projectPath)}.";
             return;
         }
@@ -1254,6 +1484,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FrameHeight = 0;
         IsMediaLoaded = false;
         ProgressValue = 0;
+        ResetPreviewZoomState(fitMode: true);
         DraftBox = null;
         OverlayBoxes.Clear();
         Tracks.Clear();
