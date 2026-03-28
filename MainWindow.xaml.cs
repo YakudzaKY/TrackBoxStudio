@@ -23,6 +23,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double DefaultMaximumPreviewZoomScale = 8.0;
     private const double MinimumPreviewZoomScale = 0.1;
     private const double ZoomComparisonEpsilon = 0.001;
+    private const double OverlayLabelMinimumHeight = 22;
+    private const double OverlayLabelMinimumWidth = 40;
+    private const double OverlayLabelCharacterWidthEstimate = 7.5;
+    private const double OverlayLabelHorizontalPaddingEstimate = 18;
 
     private readonly MediaDocumentService _mediaService = new();
     private readonly InpaintProcessingService _processingService = new();
@@ -465,6 +469,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
+            _frameLoadTimer.Stop();
             _mediaService.Open(dialog.FileName);
             InputPath = dialog.FileName;
             OutputPath = BuildDefaultOutputPath(dialog.FileName);
@@ -476,13 +481,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             CurrentFrameIndex = 0;
             ProgressValue = 0;
             ResetPreviewZoomState(fitMode: true);
+            ResetOverlayInteraction();
 
-            Tracks.Clear();
-            SelectedTrack = null;
-            OverlayBoxes.Clear();
-            DraftBox = null;
-
-            StatusText = $"Loaded {Path.GetFileName(dialog.FileName)}. Build tracks and keyframes next.";
+            var autoCreatedTrack = EnsureTrackAvailableForLoadedMedia();
+            StatusText = autoCreatedTrack is not null
+                ? $"Loaded {Path.GetFileName(dialog.FileName)}. Added {autoCreatedTrack.DisplayName} automatically."
+                : $"Loaded {Path.GetFileName(dialog.FileName)}. Kept the current tracks and boxes.";
             await LoadFrameAsync(0);
             SchedulePreviewFitIfNeeded();
             CurrentProjectPath = string.Empty;
@@ -617,16 +621,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var track = new TimelineTrack
-        {
-            Name = $"Track {Tracks.Count + 1}",
-            ColorHex = _trackColors[Tracks.Count % _trackColors.Length],
-        };
-
-        track.RebuildSegments(TotalFrames);
-        Tracks.Add(track);
-        SelectedTrack = track;
-        StatusText = $"Added {track.DisplayName}.";
+        AddTrackCore(updateStatus: true);
     }
 
     private void RemoveTrack_Click(object sender, RoutedEventArgs e)
@@ -1308,6 +1303,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var stroke = CreateSolidBrush(track.ColorHex, 255);
             var fill = CreateSolidBrush(track.ColorHex, ReferenceEquals(track, SelectedTrack) ? (byte)72 : (byte)44);
             var labelBackground = CreateSolidBrush(track.ColorHex, 180);
+            var label = ReferenceEquals(track, SelectedTrack) ? $"{track.Name} (selected)" : track.Name;
 
             OverlayBoxes.Add(new OverlayBox
             {
@@ -1318,8 +1314,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Stroke = stroke,
                 Fill = fill,
                 StrokeThickness = ReferenceEquals(track, SelectedTrack) ? 3 : 2,
-                Label = ReferenceEquals(track, SelectedTrack) ? $"{track.Name} (selected)" : track.Name,
+                Label = label,
                 LabelBackground = labelBackground,
+                LabelVisibility = ShouldShowOverlayLabel(label, activeBox.Width, activeBox.Height)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed,
             });
         }
     }
@@ -1584,6 +1583,69 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var brush = new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
         brush.Freeze();
         return brush;
+    }
+
+    private TimelineTrack AddTrackCore(bool updateStatus)
+    {
+        var track = new TimelineTrack
+        {
+            Name = $"Track {Tracks.Count + 1}",
+            ColorHex = _trackColors[Tracks.Count % _trackColors.Length],
+        };
+
+        track.RebuildSegments(TotalFrames);
+        Tracks.Add(track);
+        SelectedTrack = track;
+
+        if (updateStatus)
+        {
+            StatusText = $"Added {track.DisplayName}.";
+        }
+
+        return track;
+    }
+
+    private TimelineTrack? EnsureTrackAvailableForLoadedMedia()
+    {
+        RebuildAllTrackSegments();
+
+        if (Tracks.Count == 0)
+        {
+            return AddTrackCore(updateStatus: false);
+        }
+
+        if (SelectedTrack is null)
+        {
+            SelectedTrack = Tracks.First();
+        }
+
+        return null;
+    }
+
+    private void RebuildAllTrackSegments()
+    {
+        foreach (var track in Tracks)
+        {
+            track.RebuildSegments(TotalFrames);
+        }
+
+        OnPropertyChanged(nameof(CanProcess));
+        OnPropertyChanged(nameof(SelectedTrackStatus));
+        OnPropertyChanged(nameof(SelectedTrackKeyframeStatus));
+    }
+
+    private static bool ShouldShowOverlayLabel(string label, double boxWidth, double boxHeight)
+    {
+        if (boxWidth < OverlayLabelMinimumWidth || boxHeight < OverlayLabelMinimumHeight)
+        {
+            return false;
+        }
+
+        var estimatedLabelWidth = Math.Max(
+            OverlayLabelMinimumWidth,
+            (label.Length * OverlayLabelCharacterWidthEstimate) + OverlayLabelHorizontalPaddingEstimate);
+
+        return boxWidth >= estimatedLabelWidth;
     }
 
     private BoxRect? NormalizeDraft(BoxRect? box)

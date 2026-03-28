@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Media;
 
 namespace TrackBoxStudio.Models;
@@ -21,4 +22,6 @@ public sealed class OverlayBox
     public required string Label { get; init; }
 
     public required Brush LabelBackground { get; init; }
+
+    public required Visibility LabelVisibility { get; init; }
 }
