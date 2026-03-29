@@ -1598,10 +1598,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private BoxRect BuildBoxFromPoints(Point start, Point end)
     {
-        var x1 = Math.Clamp((int)Math.Round(Math.Min(start.X, end.X)), 0, Math.Max(0, FrameWidth - 1));
-        var y1 = Math.Clamp((int)Math.Round(Math.Min(start.Y, end.Y)), 0, Math.Max(0, FrameHeight - 1));
-        var x2 = Math.Clamp((int)Math.Round(Math.Max(start.X, end.X)), 0, Math.Max(0, FrameWidth));
-        var y2 = Math.Clamp((int)Math.Round(Math.Max(start.Y, end.Y)), 0, Math.Max(0, FrameHeight));
+        var minX = (int)Math.Round(Math.Min(start.X, end.X));
+        var minY = (int)Math.Round(Math.Min(start.Y, end.Y));
+        var maxX = (int)Math.Round(Math.Max(start.X, end.X));
+        var maxY = (int)Math.Round(Math.Max(start.Y, end.Y));
+
+        var x1 = Math.Max(0, Math.Min(minX, FrameWidth - 1));
+        var y1 = Math.Max(0, Math.Min(minY, FrameHeight - 1));
+        var x2 = Math.Max(0, Math.Min(maxX, FrameWidth));
+        var y2 = Math.Max(0, Math.Min(maxY, FrameHeight));
 
         return new BoxRect
         {
