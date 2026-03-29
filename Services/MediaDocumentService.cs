@@ -86,8 +86,11 @@ public sealed class MediaDocumentService : IDisposable
     {
         DisposeCapture();
 
-        _cachedImage?.Dispose();
-        _cachedImage = null;
+        lock (_sync)
+        {
+            _cachedImage?.Dispose();
+            _cachedImage = null;
+        }
 
         SourcePath = null;
         IsVideo = false;
@@ -112,12 +115,15 @@ public sealed class MediaDocumentService : IDisposable
 
         if (!IsVideo)
         {
-            if (_cachedImage is null || _cachedImage.Empty())
+            lock (_sync)
             {
-                throw new InvalidOperationException($"Cached image is unavailable: {SourcePath}");
-            }
+                if (_cachedImage is null || _cachedImage.IsDisposed || _cachedImage.Empty())
+                {
+                    throw new InvalidOperationException($"Cached image is unavailable: {SourcePath}");
+                }
 
-            return _cachedImage.Clone();
+                return _cachedImage.Clone();
+            }
         }
 
         lock (_sync)
