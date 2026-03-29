@@ -93,6 +93,9 @@ TEMPORAL_BLEND_EDGE_STRENGTH = COVERAGE_CONFIG["temporal_blend_edge_strength"]
 TEMPORAL_BLEND_FALLOFF_POWER = COVERAGE_CONFIG["temporal_blend_falloff_power"]
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
+DISCORD_SAFE_VIDEO_CRF = 14
+DISCORD_SAFE_VIDEO_PRESET = "slow"
+DISCORD_SAFE_AUDIO_BITRATE = "192k"
 
 
 @dataclass
@@ -517,6 +520,130 @@ def move_temp_to_output(temp_video_path: str, output_path: str) -> None:
     shutil.move(temp_video_path, output_path)
 
 
+def encode_processed_video_with_ffmpeg(
+    ffmpeg: str,
+    input_path: str,
+    output_path: str,
+    processed_directory: str,
+    frame_count: int,
+    fps: float,
+    width: int,
+    height: int,
+    preserve_audio: bool,
+) -> None:
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "-s:v",
+        f"{width}x{height}",
+        "-r",
+        f"{fps:.6f}",
+        "-i",
+        "-",
+    ]
+
+    if preserve_audio:
+        command.extend(["-i", input_path])
+
+    command.extend(
+        [
+            "-map",
+            "0:v:0",
+        ]
+    )
+
+    if preserve_audio:
+        command.extend(["-map", "1:a?"])
+
+    if width % 2 != 0 or height % 2 != 0:
+        emit_status("Padding output to even dimensions for H.264 / yuv420p compatibility.")
+        command.extend(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"])
+
+    command.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            DISCORD_SAFE_VIDEO_PRESET,
+            "-crf",
+            str(DISCORD_SAFE_VIDEO_CRF),
+            "-profile:v",
+            "high",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+        ]
+    )
+
+    if preserve_audio:
+        command.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                DISCORD_SAFE_AUDIO_BITRATE,
+                "-shortest",
+            ]
+        )
+    else:
+        command.append("-an")
+
+    command.append(output_path)
+
+    progress_stride = max(1, frame_count // 200)
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
+        if process.stdin is None:
+            raise RuntimeError("ffmpeg encoder stdin was not available.")
+
+        for frame_index in range(frame_count):
+            output_frame = load_temp_array(processed_directory, frame_index).astype(np.uint8, copy=False)
+            if output_frame.shape[1] != width or output_frame.shape[0] != height:
+                raise RuntimeError(
+                    f"Processed frame {frame_index} has unexpected size "
+                    f"{output_frame.shape[1]}x{output_frame.shape[0]} (expected {width}x{height})."
+                )
+
+            process.stdin.write(np.ascontiguousarray(output_frame).tobytes())
+            if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
+                emit_progress(0.95 + 0.05 * ((frame_index + 1) / frame_count))
+
+        process.stdin.close()
+        stderr_output = process.stderr.read().decode("utf-8", errors="replace") if process.stderr is not None else ""
+        return_code = process.wait()
+    except BrokenPipeError as exc:
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+        stderr_output = process.stderr.read().decode("utf-8", errors="replace") if process.stderr is not None else ""
+        process.wait()
+        details = stderr_output.strip() or "ffmpeg closed the input pipe unexpectedly."
+        raise RuntimeError(f"ffmpeg video encode failed.{os.linesep}{details}") from exc
+    except Exception:
+        process.kill()
+        process.wait()
+        raise
+
+    if return_code != 0 or not os.path.exists(output_path):
+        details = stderr_output.strip() or "ffmpeg exited without producing an output file."
+        raise RuntimeError(f"ffmpeg video encode failed.{os.linesep}{details}")
+
+
 def copy_audio_if_possible(input_path: str, output_path: str, temp_video_path: str) -> None:
     ffmpeg = resolve_ffmpeg()
     if ffmpeg is None:
@@ -617,6 +744,7 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
     source_directory = os.path.join(temp_directory, "source-frames")
     processed_directory = os.path.join(temp_directory, "processed-frames")
     temp_video_path = os.path.join(temp_directory, "video-temp.mp4")
+    discord_safe_output_path = os.path.join(temp_directory, "video-discord-safe.mp4")
     os.makedirs(source_directory, exist_ok=True)
     os.makedirs(processed_directory, exist_ok=True)
 
@@ -659,15 +787,6 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
 
         plans_by_frame = build_plans_by_frame(frame_count, segment_plans)
 
-        writer = cv2.VideoWriter(
-            temp_video_path,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            fps if fps > 0 else 30.0,
-            (width, height),
-        )
-        if not writer.isOpened():
-            raise RuntimeError(f"Failed to create output video: {temp_video_path}")
-
         emit_status("Rendering stable mask overlay preview..." if render_mask_only else "Applying identical segment masks across each enabled range...")
         progress_stride = max(1, frame_count // 200)
 
@@ -690,20 +809,46 @@ def process_video(input_path: str, output_path: str, tracks: list[dict], model_m
         if not render_mask_only:
             apply_temporal_segment_blend(frame_count, source_directory, processed_directory, segment_plans)
 
-        emit_status("Encoding output video...")
-        for frame_index in range(frame_count):
-            output_frame = load_temp_array(processed_directory, frame_index).astype(np.uint8, copy=False)
-            writer.write(output_frame)
-            if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
-                emit_progress(0.95 + 0.05 * ((frame_index + 1) / frame_count))
-
-        writer.release()
-        writer = None
-        if preserve_audio:
-            copy_audio_if_possible(input_path, output_path, temp_video_path)
+        ffmpeg = resolve_ffmpeg()
+        if ffmpeg is not None:
+            emit_status("Encoding Discord-safe MP4 with high-quality H.264...")
+            encode_processed_video_with_ffmpeg(
+                ffmpeg,
+                input_path,
+                discord_safe_output_path,
+                processed_directory,
+                frame_count,
+                fps if fps > 0 else 30.0,
+                width,
+                height,
+                preserve_audio,
+            )
+            move_temp_to_output(discord_safe_output_path, output_path)
         else:
-            emit_status("Saving processed video without audio copy.")
-            move_temp_to_output(temp_video_path, output_path)
+            emit_status("ffmpeg was not found. Falling back to OpenCV mp4v export; Discord compatibility may be limited.")
+            writer = cv2.VideoWriter(
+                temp_video_path,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                fps if fps > 0 else 30.0,
+                (width, height),
+            )
+            if not writer.isOpened():
+                raise RuntimeError(f"Failed to create output video: {temp_video_path}")
+
+            emit_status("Encoding fallback MP4 output...")
+            for frame_index in range(frame_count):
+                output_frame = load_temp_array(processed_directory, frame_index).astype(np.uint8, copy=False)
+                writer.write(output_frame)
+                if frame_index == frame_count - 1 or (frame_index + 1) % progress_stride == 0:
+                    emit_progress(0.95 + 0.05 * ((frame_index + 1) / frame_count))
+
+            writer.release()
+            writer = None
+            if preserve_audio:
+                copy_audio_if_possible(input_path, output_path, temp_video_path)
+            else:
+                emit_status("Saving processed video without audio copy.")
+                move_temp_to_output(temp_video_path, output_path)
         shutil.rmtree(temp_directory, ignore_errors=True)
         emit_progress(1.0)
     except Exception:
