@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using TrackBoxStudio;
 using TrackBoxStudio.Models;
 
 namespace TrackBoxStudio.Services;
@@ -294,9 +295,10 @@ public sealed class InpaintProcessingService
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Best-effort cleanup only.
+            App.LogError(ex, "Process Cleanup");
         }
     }
 }
