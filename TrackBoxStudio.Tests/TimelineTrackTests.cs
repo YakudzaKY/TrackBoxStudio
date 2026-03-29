@@ -153,5 +153,36 @@ public class TimelineTrackTests
         Assert.Equal(10, track.Keyframes[0].Frame);
         Assert.Equal(20, track.Keyframes[1].Frame);
         Assert.Equal(30, track.Keyframes[2].Frame);
+    public void RemoveKeyframe_ExistingKeyframe_RemovesKeyframe()
+    {
+        // Arrange
+        var track = new TimelineTrack();
+        var keyframe1 = new BoxKeyframe { Frame = 10 };
+        var keyframe2 = new BoxKeyframe { Frame = 20 };
+        track.UpsertKeyframe(keyframe1);
+        track.UpsertKeyframe(keyframe2);
+
+        // Act
+        track.RemoveKeyframe(10);
+
+        // Assert
+        Assert.Single(track.Keyframes);
+        Assert.Equal(20, track.Keyframes[0].Frame);
+    }
+
+    [Fact]
+    public void RemoveKeyframe_NonExistingKeyframe_DoesNothing()
+    {
+        // Arrange
+        var track = new TimelineTrack();
+        var keyframe = new BoxKeyframe { Frame = 10 };
+        track.UpsertKeyframe(keyframe);
+
+        // Act
+        track.RemoveKeyframe(20);
+
+        // Assert
+        Assert.Single(track.Keyframes);
+        Assert.Equal(10, track.Keyframes[0].Frame);
     }
 }

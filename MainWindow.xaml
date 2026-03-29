@@ -180,7 +180,7 @@
 
                     <Border Grid.Row="1" Background="#080B11" Margin="0,14,0,0" Padding="10">
                         <Grid>
-                            <TextBlock Text="Open a video, pick a track, and draw a box with the mouse."
+                            <TextBlock Text="Open a video and draw a box with the mouse. The first track is created automatically."
                                        Foreground="#6E7486"
                                        FontSize="18"
                                        HorizontalAlignment="Center"
@@ -229,13 +229,18 @@
                                                 </ItemsControl.ItemContainerStyle>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate DataType="{x:Type models:OverlayBox}">
-                                                        <Grid>
+                                                        <Grid Width="{Binding Width}"
+                                                              Height="{Binding Height}"
+                                                              ClipToBounds="True">
                                                             <Rectangle Width="{Binding Width}"
                                                                        Height="{Binding Height}"
                                                                        Stroke="{Binding Stroke}"
                                                                        Fill="{Binding Fill}"
                                                                        StrokeThickness="{Binding StrokeThickness}" />
-                                                            <Border Background="{Binding LabelBackground}" Padding="5,2" Margin="2">
+                                                            <Border Background="{Binding LabelBackground}"
+                                                                    Padding="5,2"
+                                                                    Margin="2"
+                                                                    Visibility="{Binding LabelVisibility}">
                                                                 <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11" FontWeight="SemiBold" />
                                                             </Border>
                                                         </Grid>
