@@ -116,7 +116,7 @@ public sealed class InpaintProcessingService
             StartInfo = new ProcessStartInfo
             {
                 FileName = pythonExecutable,
-                Arguments = $"\"{runnerScript}\" \"{payloadPath}\"",
+                ArgumentList = { runnerScript, payloadPath },
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -213,12 +213,12 @@ public sealed class InpaintProcessingService
         }
     }
 
-    private static string ResolvePythonExecutable()
+    internal static string ResolvePythonExecutable()
     {
         var candidates = new List<string>();
 
-        AppendIfPresent(candidates, Environment.GetEnvironmentVariable("TRACKBOX_PYTHON_EXE"));
-        AppendIfPresent(candidates, Environment.GetEnvironmentVariable("LAMA_PYTHON_EXE"));
+        AppendIfValidated(candidates, Environment.GetEnvironmentVariable("TRACKBOX_PYTHON_EXE"));
+        AppendIfValidated(candidates, Environment.GetEnvironmentVariable("LAMA_PYTHON_EXE"));
         AppendIfPresent(candidates, Path.Combine(AppContext.BaseDirectory, "python", "python.exe"));
 
         var projectRoot = FindProjectRoot();
@@ -278,9 +278,28 @@ public sealed class InpaintProcessingService
         return null;
     }
 
-    private static void AppendIfPresent(List<string> candidates, string? path)
+    internal static void AppendIfPresent(List<string> candidates, string? path)
     {
         if (!string.IsNullOrWhiteSpace(path))
+        {
+            candidates.Add(path);
+        }
+    }
+
+    internal static void AppendIfValidated(List<string> candidates, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        if (!Path.IsPathRooted(path))
+        {
+            return;
+        }
+
+        var fileName = Path.GetFileName(path);
+        if (fileName.Contains("python", StringComparison.OrdinalIgnoreCase))
         {
             candidates.Add(path);
         }
