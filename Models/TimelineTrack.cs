@@ -9,6 +9,7 @@ public sealed class TimelineTrack : BindableBase
     private string _id = Guid.NewGuid().ToString("N");
     private string _name = string.Empty;
     private string _colorHex = "#4ADE80";
+    private Brush? _trackBrush;
 
     public TimelineTrack()
     {
@@ -40,6 +41,7 @@ public sealed class TimelineTrack : BindableBase
         {
             if (SetProperty(ref _colorHex, value))
             {
+                _trackBrush = null;
                 OnPropertyChanged(nameof(TrackBrush));
             }
         }
@@ -51,7 +53,24 @@ public sealed class TimelineTrack : BindableBase
 
     public string DisplayName => Name;
 
-    public Brush TrackBrush => (SolidColorBrush)new BrushConverter().ConvertFromString(ColorHex)!;
+    public Brush TrackBrush
+    {
+        get
+        {
+            if (_trackBrush is null)
+            {
+                var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(ColorHex)!;
+                if (brush.CanFreeze)
+                {
+                    brush.Freeze();
+                }
+
+                _trackBrush = brush;
+            }
+
+            return _trackBrush;
+        }
+    }
 
     public IEnumerable<BoxKeyframe> OrderedKeyframes()
     {
