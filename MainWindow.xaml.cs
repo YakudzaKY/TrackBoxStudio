@@ -613,16 +613,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var track = new TimelineTrack
-        {
-            Name = $"Track {Tracks.Count + 1}",
-            ColorHex = TrackColors.GetColorForTrackIndex(Tracks.Count),
-        };
-
-        track.RebuildSegments(TotalFrames);
-        Tracks.Add(track);
-        SelectedTrack = track;
-        StatusText = $"Added {track.DisplayName}.";
         AddTrackCore(updateStatus: true);
     }
 
@@ -1592,7 +1582,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var track = new TimelineTrack
         {
             Name = $"Track {Tracks.Count + 1}",
-            ColorHex = _trackColors[Tracks.Count % _trackColors.Length],
+            ColorHex = TrackColors.GetColorForTrackIndex(Tracks.Count),
         };
 
         track.RebuildSegments(TotalFrames);

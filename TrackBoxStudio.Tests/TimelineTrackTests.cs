@@ -153,6 +153,10 @@ public class TimelineTrackTests
         Assert.Equal(10, track.Keyframes[0].Frame);
         Assert.Equal(20, track.Keyframes[1].Frame);
         Assert.Equal(30, track.Keyframes[2].Frame);
+
+    }
+
+    [Fact]
     public void RemoveKeyframe_ExistingKeyframe_RemovesKeyframe()
     {
         // Arrange
