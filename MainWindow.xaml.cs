@@ -10,6 +10,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using TrackBoxStudio.Dialogs;
+using TrackBoxStudio.Infrastructure;
 using TrackBoxStudio.Models;
 using TrackBoxStudio.Services;
 
@@ -29,15 +30,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly InpaintCoverageSettingsService _coverageSettingsService = new();
     private readonly ProjectPersistenceService _projectService = new();
     private readonly DispatcherTimer _frameLoadTimer;
-    private readonly string[] _trackColors =
-    [
-        "#4ADE80",
-        "#38BDF8",
-        "#F59E0B",
-        "#F472B6",
-        "#A78BFA",
-        "#FB7185",
-    ];
 
     private TimelineTrack? _selectedTrack;
     private BitmapSource? _currentFrameImage;
@@ -620,7 +612,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var track = new TimelineTrack
         {
             Name = $"Track {Tracks.Count + 1}",
-            ColorHex = _trackColors[Tracks.Count % _trackColors.Length],
+            ColorHex = TrackColors.GetColorForTrackIndex(Tracks.Count),
         };
 
         track.RebuildSegments(TotalFrames);
