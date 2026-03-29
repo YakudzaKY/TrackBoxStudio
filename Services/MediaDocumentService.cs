@@ -19,6 +19,7 @@ public sealed class MediaDocumentService : IDisposable
 
     private readonly object _sync = new();
     private VideoCapture? _capture;
+    private Mat? _cachedImage;
 
     public string? SourcePath { get; private set; }
 
@@ -66,11 +67,14 @@ public sealed class MediaDocumentService : IDisposable
             return;
         }
 
-        using var mat = Cv2.ImRead(path, ImreadModes.Color);
+        var mat = Cv2.ImRead(path, ImreadModes.Color);
         if (mat.Empty())
         {
+            mat.Dispose();
             throw new InvalidOperationException($"Failed to open image: {path}");
         }
+
+        _cachedImage = mat;
 
         TotalFrames = 1;
         FramesPerSecond = 0;
@@ -81,6 +85,13 @@ public sealed class MediaDocumentService : IDisposable
     public void Reset()
     {
         DisposeCapture();
+
+        lock (_sync)
+        {
+            _cachedImage?.Dispose();
+            _cachedImage = null;
+        }
+
         SourcePath = null;
         IsVideo = false;
         TotalFrames = 0;
@@ -104,13 +115,15 @@ public sealed class MediaDocumentService : IDisposable
 
         if (!IsVideo)
         {
-            var image = Cv2.ImRead(SourcePath, ImreadModes.Color);
-            if (image.Empty())
+            lock (_sync)
             {
-                throw new InvalidOperationException($"Failed to read image: {SourcePath}");
-            }
+                if (_cachedImage is null || _cachedImage.IsDisposed || _cachedImage.Empty())
+                {
+                    throw new InvalidOperationException($"Cached image is unavailable: {SourcePath}");
+                }
 
-            return image;
+                return _cachedImage.Clone();
+            }
         }
 
         lock (_sync)
