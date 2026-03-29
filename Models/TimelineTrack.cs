@@ -57,7 +57,17 @@ public sealed class TimelineTrack : BindableBase
     {
         get
         {
-            _trackBrush ??= (SolidColorBrush)new BrushConverter().ConvertFromString(ColorHex)!;
+            if (_trackBrush is null)
+            {
+                var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(ColorHex)!;
+                if (brush.CanFreeze)
+                {
+                    brush.Freeze();
+                }
+
+                _trackBrush = brush;
+            }
+
             return _trackBrush;
         }
     }
