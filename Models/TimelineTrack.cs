@@ -127,8 +127,7 @@ public sealed class TimelineTrack : BindableBase
             return;
         }
 
-        var ordered = OrderedKeyframes().ToList();
-        if (ordered.Count == 0)
+        if (Keyframes.Count == 0)
         {
             Segments.Add(new TrackSegmentPreview
             {
@@ -146,7 +145,7 @@ public sealed class TimelineTrack : BindableBase
         {
             (0, null),
         };
-        segmentStarts.AddRange(ordered.Select(keyframe => (keyframe.Frame, (BoxKeyframe?)keyframe)));
+        segmentStarts.AddRange(Keyframes.Select(keyframe => (keyframe.Frame, (BoxKeyframe?)keyframe)));
 
         var compact = segmentStarts
             .OrderBy(item => item.StartFrame)
