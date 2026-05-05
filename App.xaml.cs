@@ -15,6 +15,7 @@ public partial class App : Application
 
     public App()
     {
+        THIS_IS_A_SYNTAX_ERROR_TO_BREAK_COMPILATION;
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
     }
